@@ -2,7 +2,7 @@
 
 App de treino e nutrição do casal, com **sincronização na nuvem** (grátis) para acompanhar a evolução de qualquer aparelho.
 
-- **Treinos** A/B/C por perfil (Isa 🌸 / Luca ⚡)
+- **Treinos** A/B/C por perfil
 - **Evolução**: log de carga × reps com PRs, peso corporal, medidas e fotos de progresso — tudo com gráficos
 - **Análise** de volume semanal por grupo muscular
 - **Nutrição** com metas de proteína, calorias, carbo e suplementação
