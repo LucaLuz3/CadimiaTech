@@ -80,7 +80,7 @@ export default function App() {
       </div>
 
       <div style={{ maxWidth: 780, margin: "0 auto", padding: "20px 16px 60px" }}>
-        {activeTab === "treinos" && <WorkoutTab p={p} />}
+        {activeTab === "treinos" && <WorkoutTab who={who} p={p} />}
         {activeTab === "evolucao" && <ProgressTab who={who} p={p} />}
         {activeTab === "analise" && <AnalysisTab who={who} p={p} />}
         {activeTab === "nutricao" && <NutritionTab who={who} p={p} />}
