@@ -1,8 +1,7 @@
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect } from "react";
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from "recharts";
 import { measurementTypes } from "../data/plans";
 import {
-  saveWorkoutLog, getWorkoutLogs, deleteWorkoutLog, bestSet,
   addBodyWeight, getBodyWeights, deleteBodyWeight,
   addMeasurement, getMeasurements, deleteMeasurement,
   uploadPhoto, getPhotos, deletePhoto,
@@ -11,12 +10,10 @@ import {
 const today = () => new Date().toISOString().slice(0, 10);
 const fmt = (d) => new Date(d + "T00:00:00").toLocaleDateString("pt-BR", { day: "2-digit", month: "2-digit", year: "2-digit" });
 const fmtShort = (d) => new Date(d + "T00:00:00").toLocaleDateString("pt-BR", { day: "2-digit", month: "2-digit" });
-const setCount = (sets) => Math.max(1, parseInt(String(sets).match(/\d+/)?.[0] || "3", 10));
 
 export default function ProgressTab({ who, p }) {
-  const [sub, setSub] = useState("treino");
+  const [sub, setSub] = useState("peso");
   const subs = [
-    ["treino", "🏋️ Treino"],
     ["peso", "⚖️ Peso"],
     ["medidas", "📏 Medidas"],
     ["fotos", "📸 Fotos"],
@@ -39,129 +36,13 @@ export default function ProgressTab({ who, p }) {
         ))}
       </div>
 
-      {sub === "treino" && <WorkoutLog who={who} p={p} />}
+      <p style={{ fontSize: 11, color: "#555", marginBottom: 16, lineHeight: 1.6 }}>
+        💡 As cargas e repetições de cada treino agora são registradas direto na aba <strong style={{ color: "#888" }}>Treinos</strong>.
+      </p>
+
       {sub === "peso" && <BodyWeight who={who} p={p} />}
       {sub === "medidas" && <Measurements who={who} p={p} />}
       {sub === "fotos" && <Photos who={who} p={p} />}
-    </div>
-  );
-}
-
-/* =================== LOG DE TREINO =================== */
-function WorkoutLog({ who, p }) {
-  const [dayId, setDayId] = useState(p.days[0].id);
-  const [date, setDate] = useState(today());
-  const [draft, setDraft] = useState({});
-  const [logs, setLogs] = useState([]);
-  const [loading, setLoading] = useState(true);
-  const [saving, setSaving] = useState(false);
-  const [msg, setMsg] = useState("");
-
-  const day = p.days.find((d) => d.id === dayId);
-
-  async function refresh() {
-    setLoading(true);
-    try { setLogs(await getWorkoutLogs(who)); }
-    catch (e) { setMsg("Erro ao carregar: " + e.message); }
-    setLoading(false);
-  }
-  useEffect(() => { refresh(); setDraft({}); }, [who]);
-  useEffect(() => { setDraft({}); }, [dayId]);
-
-  const logsByExercise = useMemo(() => {
-    const map = {};
-    for (const l of logs) (map[l.exercise_name] ||= []).push(l);
-    return map;
-  }, [logs]);
-
-  function setCell(exName, idx, field, value) {
-    setDraft((d) => {
-      const rows = d[exName] ? [...d[exName]] : Array.from({ length: setCount(day.exercises.find(e => e.name === exName).sets) }, () => ({ weight: "", reps: "" }));
-      rows[idx] = { ...rows[idx], [field]: value };
-      return { ...d, [exName]: rows };
-    });
-  }
-
-  async function save() {
-    setSaving(true); setMsg("");
-    try {
-      let count = 0;
-      for (const ex of day.exercises) {
-        const rows = (draft[ex.name] || []).filter((r) => r.weight !== "" || r.reps !== "");
-        if (rows.length === 0) continue;
-        const sets = rows.map((r) => ({ weight: Number(r.weight) || 0, reps: Number(r.reps) || 0 }));
-        await saveWorkoutLog({ person: who, dayId, exerciseName: ex.name, date, sets });
-        count++;
-      }
-      if (count === 0) { setMsg("Preencha pelo menos uma série."); }
-      else { setMsg(`✅ Treino ${dayId} salvo (${count} exercícios)!`); setDraft({}); await refresh(); }
-    } catch (e) { setMsg("Erro ao salvar: " + e.message); }
-    setSaving(false);
-  }
-
-  return (
-    <div>
-      <div style={{ display: "flex", gap: 8, marginBottom: 14, alignItems: "center", flexWrap: "wrap" }}>
-        <div style={{ display: "flex", gap: 6 }}>
-          {p.days.map((d) => (
-            <button key={d.id} onClick={() => setDayId(d.id)} className="tab-btn" style={{
-              background: dayId === d.id ? `linear-gradient(135deg, ${p.color}bb, ${p.color}77)` : "rgba(255,255,255,0.04)",
-              border: `1px solid ${dayId === d.id ? p.color : "#2a2a35"}`, borderRadius: 8,
-              width: 40, height: 40, fontFamily: "'Bebas Neue', sans-serif", fontSize: 22,
-              color: dayId === d.id ? "#fff" : "#555",
-            }}>{d.id}</button>
-          ))}
-        </div>
-        <input type="date" value={date} max={today()} onChange={(e) => setDate(e.target.value)} style={dateInput} />
-      </div>
-
-      {loading ? <Loading /> : day.exercises.map((ex) => {
-        const exLogs = logsByExercise[ex.name] || [];
-        const pr = bestSet(exLogs);
-        const last = exLogs[0];
-        const rows = draft[ex.name] || Array.from({ length: setCount(ex.sets) }, () => ({ weight: "", reps: "" }));
-        return (
-          <div key={ex.name} style={{
-            background: "rgba(255,255,255,0.025)",
-            border: `1px solid ${ex.priority ? p.color + "33" : "rgba(255,255,255,0.07)"}`,
-            borderRadius: 10, padding: "12px 14px", marginBottom: 8,
-          }}>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", flexWrap: "wrap", gap: 6 }}>
-              <span style={{ fontWeight: 600, fontSize: 13 }}>{ex.name}</span>
-              <span style={{ fontSize: 10, color: "#666", fontFamily: "'DM Mono', monospace" }}>meta: {ex.sets}×{ex.reps}</span>
-            </div>
-
-            {(pr || last) && (
-              <div style={{ display: "flex", gap: 14, margin: "6px 0 10px", fontSize: 10, fontFamily: "'DM Mono', monospace" }}>
-                {pr && <span style={{ color: p.accent }}>🏆 PR: {pr.weight}kg × {pr.reps}</span>}
-                {last && <span style={{ color: "#666" }}>último: {fmtShort(last.date)} · {(last.sets || []).map(s => `${s.weight}×${s.reps}`).join(", ")}</span>}
-              </div>
-            )}
-
-            <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
-              {rows.map((r, idx) => (
-                <div key={idx} style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                  <span style={{ fontSize: 10, color: "#555", width: 16, fontFamily: "'DM Mono', monospace" }}>{idx + 1}</span>
-                  <input type="number" inputMode="decimal" placeholder="kg" value={r.weight}
-                    onChange={(e) => setCell(ex.name, idx, "weight", e.target.value)} style={miniInput} />
-                  <span style={{ color: "#555", fontSize: 12 }}>×</span>
-                  <input type="number" inputMode="numeric" placeholder="reps" value={r.reps}
-                    onChange={(e) => setCell(ex.name, idx, "reps", e.target.value)} style={miniInput} />
-                </div>
-              ))}
-            </div>
-          </div>
-        );
-      })}
-
-      {!loading && (
-        <>
-          {msg && <div style={{ fontSize: 12, color: msg.startsWith("✅") ? "#7CFC9B" : "#ff9b9b", margin: "10px 0", textAlign: "center" }}>{msg}</div>}
-          <button onClick={save} disabled={saving} className="hover-lift" style={saveBtn(p)}>
-            {saving ? "Salvando…" : `💾 Salvar Treino ${dayId}`}
-          </button>
-        </>
-      )}
     </div>
   );
 }
@@ -377,17 +258,7 @@ const dateInput = {
   background: "rgba(255,255,255,0.05)", border: "1px solid #2a2a35", borderRadius: 8,
   padding: "10px 12px", color: "#f0eee8", fontSize: 13, colorScheme: "dark",
 };
-const miniInput = {
-  background: "rgba(255,255,255,0.05)", border: "1px solid #2a2a35", borderRadius: 7,
-  padding: "8px 10px", color: "#f0eee8", fontSize: 13, width: 72, textAlign: "center",
-  fontFamily: "'DM Mono', monospace",
-};
 const addBtn = (p) => ({
   background: `linear-gradient(135deg, ${p.color}, ${p.color}aa)`, border: "none", borderRadius: 8,
   width: 44, color: "#0d0d12", fontSize: 20, fontWeight: 700, cursor: "pointer",
-});
-const saveBtn = (p) => ({
-  width: "100%", background: `linear-gradient(135deg, ${p.color}, ${p.accent})`, border: "none",
-  borderRadius: 12, padding: "14px", color: "#0d0d12", fontWeight: 600, fontSize: 14,
-  cursor: "pointer", marginTop: 8,
 });
