@@ -1,4 +1,4 @@
-# 💪 Treino Duo — Isa & Luca
+# 💪 Treino Duo — Cadimia Tech
 
 App de treino e nutrição do casal, com **sincronização na nuvem** (grátis) para acompanhar a evolução de qualquer aparelho.
 
