@@ -1,9 +1,26 @@
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect, useMemo, useRef } from "react";
 import { saveWorkoutLog, getWorkoutLogs, bestSet } from "../lib/db";
 
 const today = () => new Date().toISOString().slice(0, 10);
 const fmtShort = (d) => new Date(d + "T00:00:00").toLocaleDateString("pt-BR", { day: "2-digit", month: "2-digit" });
 const setCount = (sets) => Math.max(1, parseInt(String(sets).match(/\d+/)?.[0] || "3", 10));
+
+// Converte o campo "rest" (ex: "90s", "2 min", "2–3 min") em segundos.
+// Para faixas (2–3 min) usa o limite inferior como padrão.
+function parseRestSeconds(rest) {
+  if (!rest) return 90;
+  const str = String(rest).toLowerCase();
+  const nums = (str.match(/\d+/g) || []).map(Number);
+  if (nums.length === 0) return 90;
+  const val = nums[0];
+  return str.includes("min") ? val * 60 : val;
+}
+
+const mmss = (s) => {
+  const m = Math.floor(Math.max(0, s) / 60);
+  const sec = Math.max(0, s) % 60;
+  return `${m}:${String(sec).padStart(2, "0")}`;
+};
 
 const RIRBadge = ({ rir, color }) => (
   <span style={{
@@ -26,6 +43,12 @@ export default function WorkoutTab({ who, p }) {
   const [saving, setSaving] = useState(false);
   const [msg, setMsg] = useState("");
 
+  // ----- Timer de descanso -----
+  // timer: { label, total, remaining, endAt, running, done } | null
+  const [timer, setTimer] = useState(null);
+  const [muted, setMuted] = useState(false);
+  const audioCtxRef = useRef(null);
+
   const day = p.days.find((d) => d.id === activeDay);
 
   async function refresh() {
@@ -40,7 +63,86 @@ export default function WorkoutTab({ who, p }) {
   // Ao trocar de dia: limpa rascunho e mensagem (o histórico já está carregado)
   useEffect(() => { setDraft({}); setMsg(""); }, [activeDay]);
 
-  // Agrupa os logs por nome de exercício (logs já vêm ordenados por data desc)
+  /* ---------- Áudio (chime suave gerado via Web Audio) ---------- */
+  function ensureAudio() {
+    if (!audioCtxRef.current) {
+      const AC = window.AudioContext || window.webkitAudioContext;
+      if (AC) audioCtxRef.current = new AC();
+    }
+    if (audioCtxRef.current && audioCtxRef.current.state === "suspended") {
+      audioCtxRef.current.resume();
+    }
+  }
+  function playChime() {
+    const ctx = audioCtxRef.current;
+    if (!ctx) return;
+    const now = ctx.currentTime;
+    [784, 1047].forEach((freq, i) => { // G5 → C6, sobe leve
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = "sine";
+      osc.frequency.value = freq;
+      const t0 = now + i * 0.16;
+      gain.gain.setValueAtTime(0.0001, t0);
+      gain.gain.exponentialRampToValueAtTime(0.16, t0 + 0.03);
+      gain.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.5);
+      osc.connect(gain); gain.connect(ctx.destination);
+      osc.start(t0); osc.stop(t0 + 0.55);
+    });
+  }
+  function buzz() {
+    if (navigator.vibrate) navigator.vibrate([120, 60, 120]);
+  }
+
+  /* ---------- Controles do timer ---------- */
+  function startRest(seconds, label) {
+    ensureAudio(); // precisa rodar dentro do gesto de clique p/ desbloquear o áudio
+    setTimer({ label, total: seconds, remaining: seconds, endAt: Date.now() + seconds * 1000, running: true, done: false });
+  }
+  function pauseResume() {
+    setTimer((t) => {
+      if (!t || t.done) return t;
+      return t.running
+        ? { ...t, running: false, endAt: null }
+        : { ...t, running: true, endAt: Date.now() + t.remaining * 1000 };
+    });
+  }
+  function adjust(delta) {
+    setTimer((t) => {
+      if (!t) return t;
+      const rem = Math.max(1, t.remaining + delta);
+      return { ...t, done: false, remaining: rem, total: Math.max(t.total, rem), endAt: t.running ? Date.now() + rem * 1000 : t.endAt };
+    });
+  }
+  function stopTimer() { setTimer(null); }
+
+  // Contagem regressiva baseada em timestamp (não acumula erro mesmo se a aba travar)
+  useEffect(() => {
+    if (!timer || !timer.running || !timer.endAt) return;
+    let id;
+    const tick = () => {
+      const rem = Math.max(0, Math.round((timer.endAt - Date.now()) / 1000));
+      setTimer((t) => (t && t.running ? { ...t, remaining: rem } : t));
+      if (rem <= 0) {
+        if (!muted) playChime();
+        buzz();
+        setTimer((t) => (t ? { ...t, running: false, endAt: null, remaining: 0, done: true } : t));
+        return;
+      }
+      id = setTimeout(tick, 250);
+    };
+    tick();
+    return () => clearTimeout(id);
+  }, [timer?.running, timer?.endAt, muted]);
+
+  // Some sozinho alguns segundos após concluir
+  useEffect(() => {
+    if (!timer?.done) return;
+    const id = setTimeout(() => setTimer((t) => (t?.done ? null : t)), 8000);
+    return () => clearTimeout(id);
+  }, [timer?.done]);
+
+  /* ---------- Log de séries ---------- */
   const logsByExercise = useMemo(() => {
     const map = {};
     for (const l of logs) (map[l.exercise_name] ||= []).push(l);
@@ -123,6 +225,8 @@ export default function WorkoutTab({ who, p }) {
           const pr = bestSet(exLogs);
           const last = exLogs[0];
           const rows = draft[ex.name] || Array.from({ length: setCount(ex.sets) }, () => ({ weight: "", reps: "" }));
+          const restSecs = parseRestSeconds(ex.rest);
+          const isResting = timer && !timer.done && timer.label === ex.name;
           return (
             <div key={i} className="ex-row" style={{
               background: i % 2 === 0 ? "rgba(255,255,255,0.025)" : "transparent",
@@ -149,15 +253,27 @@ export default function WorkoutTab({ who, p }) {
                 <RIRBadge rir={ex.rir} color={p.color} />
               </div>
 
-              {/* Meta do exercício */}
-              <div style={{ display: "flex", gap: 12, marginLeft: 32, flexWrap: "wrap" }}>
+              {/* Meta do exercício — o Intervalo vira botão p/ iniciar o descanso */}
+              <div style={{ display: "flex", gap: 12, marginLeft: 32, flexWrap: "wrap", alignItems: "flex-end" }}>
                 <div>
                   <div style={label}>Séries × Reps</div>
                   <div style={{ fontFamily: "'DM Mono', monospace", fontSize: 12, color: p.accent }}>{ex.sets} × {ex.reps}</div>
                 </div>
                 <div>
                   <div style={label}>Intervalo</div>
-                  <div style={{ fontFamily: "'DM Mono', monospace", fontSize: 12, color: "#bbb" }}>{ex.rest}</div>
+                  <button
+                    onClick={() => startRest(restSecs, ex.name)}
+                    className="hover-lift"
+                    title={`Iniciar descanso de ${mmss(restSecs)}`}
+                    style={{
+                      display: "inline-flex", alignItems: "center", gap: 5,
+                      background: isResting ? p.color + "33" : p.color + "1a",
+                      border: `1px solid ${isResting ? p.color : p.color + "44"}`,
+                      borderRadius: 7, padding: "4px 9px", cursor: "pointer",
+                      color: p.accent, fontFamily: "'DM Mono', monospace", fontSize: 12,
+                    }}>
+                    ⏱ {mmss(restSecs)}
+                  </button>
                 </div>
                 <div style={{ flex: 1, minWidth: 100 }}>
                   <div style={label}>Músculos</div>
@@ -215,7 +331,95 @@ export default function WorkoutTab({ who, p }) {
       <button onClick={save} disabled={saving} className="hover-lift" style={saveBtn(p)}>
         {saving ? "Salvando…" : `💾 Salvar Treino ${activeDay}`}
       </button>
+
+      {/* Espaçador para a barra do timer não cobrir o botão de salvar */}
+      {timer && <div style={{ height: 96 }} />}
+
+      {/* Barra de timer fixa no rodapé */}
+      {timer && (
+        <RestTimerBar
+          timer={timer} p={p} muted={muted}
+          onToggleMute={() => setMuted((m) => !m)}
+          onPauseResume={pauseResume}
+          onAdjust={adjust}
+          onStop={stopTimer}
+        />
+      )}
     </div>
+  );
+}
+
+/* =================== BARRA DO TIMER =================== */
+function RestTimerBar({ timer, p, muted, onToggleMute, onPauseResume, onAdjust, onStop }) {
+  const pct = timer.total > 0 ? Math.max(0, Math.min(100, (timer.remaining / timer.total) * 100)) : 0;
+  const done = timer.done;
+
+  return (
+    <div style={{
+      position: "fixed", left: 0, right: 0, bottom: 0, zIndex: 50,
+      background: "rgba(17,17,24,0.96)", backdropFilter: "blur(10px)",
+      borderTop: `2px solid ${done ? "#7CFC9B" : p.color}`,
+    }}>
+      {/* Barra de progresso */}
+      <div style={{ height: 3, background: "rgba(255,255,255,0.06)" }}>
+        <div style={{
+          height: "100%", width: `${done ? 100 : pct}%`,
+          background: done ? "#7CFC9B" : `linear-gradient(90deg, ${p.color}, ${p.accent})`,
+          transition: "width 0.25s linear",
+        }} />
+      </div>
+
+      <div style={{ maxWidth: 780, margin: "0 auto", padding: "10px 16px", display: "flex", alignItems: "center", gap: 10 }}>
+        {/* Info */}
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ fontSize: 9, color: "#666", textTransform: "uppercase", letterSpacing: "0.08em", fontFamily: "'DM Mono', monospace" }}>
+            {done ? "Descanso concluído" : "Descansando"}
+          </div>
+          <div style={{ fontSize: 12, color: "#bbb", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+            {timer.label}
+          </div>
+        </div>
+
+        {/* Tempo */}
+        <div style={{
+          fontFamily: "'Bebas Neue', sans-serif", fontSize: 38, lineHeight: 1,
+          color: done ? "#7CFC9B" : p.accent, letterSpacing: "0.02em",
+          minWidth: 78, textAlign: "center",
+        }} className={done ? "" : ""}>
+          {done ? "✓" : mmss(timer.remaining)}
+        </div>
+
+        {/* Controles */}
+        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+          {!done && (
+            <>
+              <CtrlBtn onClick={() => onAdjust(-30)} title="-30s">−30</CtrlBtn>
+              <CtrlBtn onClick={onPauseResume} title={timer.running ? "Pausar" : "Continuar"} accent={p.color}>
+                {timer.running ? "⏸" : "▶"}
+              </CtrlBtn>
+              <CtrlBtn onClick={() => onAdjust(30)} title="+30s">+30</CtrlBtn>
+              <CtrlBtn onClick={onToggleMute} title={muted ? "Ativar som" : "Silenciar"}>{muted ? "🔕" : "🔔"}</CtrlBtn>
+            </>
+          )}
+          {done && (
+            <CtrlBtn onClick={() => onAdjust(60)} title="Mais 1 min" accent={p.color}>＋1:00</CtrlBtn>
+          )}
+          <CtrlBtn onClick={onStop} title="Encerrar">✕</CtrlBtn>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function CtrlBtn({ children, onClick, title, accent }) {
+  return (
+    <button onClick={onClick} title={title} className="hover-lift" style={{
+      minWidth: 38, height: 38, padding: "0 8px",
+      background: accent ? accent + "33" : "rgba(255,255,255,0.06)",
+      border: `1px solid ${accent ? accent : "#2a2a35"}`,
+      borderRadius: 9, color: "#f0eee8", fontSize: 13, cursor: "pointer",
+      fontFamily: "'DM Mono', monospace", display: "flex", alignItems: "center", justifyContent: "center",
+    }}>{children}</button>
   );
 }
 
