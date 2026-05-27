@@ -44,10 +44,14 @@ export default function WorkoutTab({ who, p }) {
   const [msg, setMsg] = useState("");
 
   // ----- Timer de descanso -----
-  // timer: { label, total, remaining, endAt, running, done } | null
+  // timer: { label, maxSets, total, remaining, endAt, running, done } | null
   const [timer, setTimer] = useState(null);
   const [muted, setMuted] = useState(false);
   const audioCtxRef = useRef(null);
+
+  // Séries concluídas nesta sessão: { [nomeExercício]: quantidade }.
+  // Não persiste — some ao recarregar / trocar de dia ou perfil.
+  const [completedSets, setCompletedSets] = useState({});
 
   const day = p.days.find((d) => d.id === activeDay);
 
@@ -58,10 +62,10 @@ export default function WorkoutTab({ who, p }) {
     setLoading(false);
   }
 
-  // Ao trocar de perfil: volta pro treino A, limpa rascunho e recarrega histórico
-  useEffect(() => { setActiveDay("A"); setDraft({}); setMsg(""); refresh(); }, [who]);
-  // Ao trocar de dia: limpa rascunho e mensagem (o histórico já está carregado)
-  useEffect(() => { setDraft({}); setMsg(""); }, [activeDay]);
+  // Ao trocar de perfil: volta pro treino A, limpa rascunho/progresso e recarrega histórico
+  useEffect(() => { setActiveDay("A"); setDraft({}); setMsg(""); setCompletedSets({}); refresh(); }, [who]);
+  // Ao trocar de dia: limpa rascunho, progresso e mensagem (o histórico já está carregado)
+  useEffect(() => { setDraft({}); setMsg(""); setCompletedSets({}); }, [activeDay]);
 
   /* ---------- Áudio (chime suave gerado via Web Audio) ---------- */
   function ensureAudio() {
@@ -95,9 +99,9 @@ export default function WorkoutTab({ who, p }) {
   }
 
   /* ---------- Controles do timer ---------- */
-  function startRest(seconds, label) {
+  function startRest(seconds, label, maxSets) {
     ensureAudio(); // precisa rodar dentro do gesto de clique p/ desbloquear o áudio
-    setTimer({ label, total: seconds, remaining: seconds, endAt: Date.now() + seconds * 1000, running: true, done: false });
+    setTimer({ label, maxSets, total: seconds, remaining: seconds, endAt: Date.now() + seconds * 1000, running: true, done: false });
   }
   function pauseResume() {
     setTimer((t) => {
@@ -116,6 +120,25 @@ export default function WorkoutTab({ who, p }) {
   }
   function stopTimer() { setTimer(null); }
 
+  /* ---------- Progresso de séries (apenas nesta sessão) ---------- */
+  // Marca a próxima série pendente do exercício como concluída, sem passar do total de séries.
+  function markSetDone(exName, maxSets) {
+    setCompletedSets((c) => {
+      const cur = c[exName] || 0;
+      const max = maxSets || cur + 1;
+      return cur >= max ? c : { ...c, [exName]: cur + 1 };
+    });
+  }
+  // Ajuste manual ao tocar no indicador de uma série (o progresso é sequencial).
+  // Clicar numa série já feita "recua" até ela; numa pendente, "avança" até ela.
+  function toggleSet(exName, idx, total) {
+    setCompletedSets((c) => {
+      const cur = c[exName] || 0;
+      const next = idx < cur ? idx : Math.min(total, idx + 1);
+      return { ...c, [exName]: next };
+    });
+  }
+
   // Contagem regressiva baseada em timestamp (não acumula erro mesmo se a aba travar)
   useEffect(() => {
     if (!timer || !timer.running || !timer.endAt) return;
@@ -126,6 +149,8 @@ export default function WorkoutTab({ who, p }) {
       if (rem <= 0) {
         if (!muted) playChime();
         buzz();
+        // ✅ ao zerar o descanso, marca a próxima série pendente deste exercício
+        markSetDone(timer.label, timer.maxSets);
         setTimer((t) => (t ? { ...t, running: false, endAt: null, remaining: 0, done: true } : t));
         return;
       }
@@ -171,7 +196,7 @@ export default function WorkoutTab({ who, p }) {
         count++;
       }
       if (count === 0) { setMsg("Preencha pelo menos uma série para salvar."); }
-      else { setMsg(`✅ Treino ${activeDay} salvo (${count} exercício${count > 1 ? "s" : ""})!`); setDraft({}); await refresh(); }
+      else { setMsg(`✅ Treino ${activeDay} salvo (${count} exercício${count > 1 ? "s" : ""})!`); setDraft({}); setCompletedSets({}); await refresh(); }
     } catch (e) { setMsg("Erro ao salvar: " + e.message); }
     setSaving(false);
   }
@@ -227,6 +252,8 @@ export default function WorkoutTab({ who, p }) {
           const rows = draft[ex.name] || Array.from({ length: setCount(ex.sets) }, () => ({ weight: "", reps: "" }));
           const restSecs = parseRestSeconds(ex.rest);
           const isResting = timer && !timer.done && timer.label === ex.name;
+          const totalSets = setCount(ex.sets);
+          const doneSets = completedSets[ex.name] || 0;
           return (
             <div key={i} className="ex-row" style={{
               background: i % 2 === 0 ? "rgba(255,255,255,0.025)" : "transparent",
@@ -250,7 +277,11 @@ export default function WorkoutTab({ who, p }) {
                     {ex.priority && <span style={{ marginLeft: 6, fontSize: 9, color: p.accent, fontFamily: "'DM Mono', monospace", background: p.color + "22", borderRadius: 3, padding: "1px 5px" }}>PRIORIDADE</span>}
                   </div>
                 </div>
-                <RIRBadge rir={ex.rir} color={p.color} />
+                {/* Progresso de séries + RIR */}
+                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  <SetProgress done={doneSets} total={totalSets} />
+                  <RIRBadge rir={ex.rir} color={p.color} />
+                </div>
               </div>
 
               {/* Meta do exercício — o Intervalo vira botão p/ iniciar o descanso */}
@@ -262,9 +293,9 @@ export default function WorkoutTab({ who, p }) {
                 <div>
                   <div style={label}>Intervalo</div>
                   <button
-                    onClick={() => startRest(restSecs, ex.name)}
+                    onClick={() => startRest(restSecs, ex.name, totalSets)}
                     className="hover-lift"
-                    title={`Iniciar descanso de ${mmss(restSecs)}`}
+                    title={`Iniciar descanso de ${mmss(restSecs)} (marca a próxima série ao zerar)`}
                     style={{
                       display: "inline-flex", alignItems: "center", gap: 5,
                       background: isResting ? p.color + "33" : p.color + "1a",
@@ -304,20 +335,33 @@ export default function WorkoutTab({ who, p }) {
               <div style={{ marginLeft: 32, marginTop: 8 }}>
                 <div style={{ ...label, marginBottom: 6 }}>Registrar séries</div>
                 <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
-                  {rows.map((r, idx) => (
-                    <div key={idx} style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                      <span style={{ fontSize: 10, color: "#555", width: 16, fontFamily: "'DM Mono', monospace" }}>{idx + 1}</span>
-                      <input type="number" inputMode="decimal"
-                        placeholder={last?.sets?.[idx]?.weight != null ? String(last.sets[idx].weight) : "kg"}
-                        value={r.weight}
-                        onChange={(e) => setCell(ex.name, idx, "weight", e.target.value)} style={miniInput} />
-                      <span style={{ color: "#555", fontSize: 12 }}>×</span>
-                      <input type="number" inputMode="numeric"
-                        placeholder={last?.sets?.[idx]?.reps != null ? String(last.sets[idx].reps) : "reps"}
-                        value={r.reps}
-                        onChange={(e) => setCell(ex.name, idx, "reps", e.target.value)} style={miniInput} />
-                    </div>
-                  ))}
+                  {rows.map((r, idx) => {
+                    const isDone = idx < doneSets;
+                    return (
+                      <div key={idx} style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                        <button
+                          onClick={() => toggleSet(ex.name, idx, rows.length)}
+                          title={isDone ? "Marcar série como NÃO feita" : "Marcar série como feita"}
+                          style={{
+                            width: 18, height: 18, borderRadius: 5, flexShrink: 0, cursor: "pointer", padding: 0,
+                            border: `1px solid ${isDone ? "#7CFC9B" : "#3a3a45"}`,
+                            background: isDone ? "#7CFC9B22" : "transparent",
+                            color: isDone ? "#7CFC9B" : "#555", fontSize: 10,
+                            fontFamily: "'DM Mono', monospace",
+                            display: "flex", alignItems: "center", justifyContent: "center",
+                          }}>{isDone ? "✓" : idx + 1}</button>
+                        <input type="number" inputMode="decimal"
+                          placeholder={last?.sets?.[idx]?.weight != null ? String(last.sets[idx].weight) : "kg"}
+                          value={r.weight}
+                          onChange={(e) => setCell(ex.name, idx, "weight", e.target.value)} style={miniInput} />
+                        <span style={{ color: "#555", fontSize: 12 }}>×</span>
+                        <input type="number" inputMode="numeric"
+                          placeholder={last?.sets?.[idx]?.reps != null ? String(last.sets[idx].reps) : "reps"}
+                          value={r.reps}
+                          onChange={(e) => setCell(ex.name, idx, "reps", e.target.value)} style={miniInput} />
+                      </div>
+                    );
+                  })}
                 </div>
               </div>
             </div>
@@ -373,7 +417,7 @@ function RestTimerBar({ timer, p, muted, onToggleMute, onPauseResume, onAdjust, 
         {/* Info */}
         <div style={{ flex: 1, minWidth: 0 }}>
           <div style={{ fontSize: 9, color: "#666", textTransform: "uppercase", letterSpacing: "0.08em", fontFamily: "'DM Mono', monospace" }}>
-            {done ? "Descanso concluído" : "Descansando"}
+            {done ? "Descanso concluído · série ✓" : "Descansando"}
           </div>
           <div style={{ fontSize: 12, color: "#bbb", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
             {timer.label}
@@ -385,7 +429,7 @@ function RestTimerBar({ timer, p, muted, onToggleMute, onPauseResume, onAdjust, 
           fontFamily: "'Bebas Neue', sans-serif", fontSize: 38, lineHeight: 1,
           color: done ? "#7CFC9B" : p.accent, letterSpacing: "0.02em",
           minWidth: 78, textAlign: "center",
-        }} className={done ? "" : ""}>
+        }}>
           {done ? "✓" : mmss(timer.remaining)}
         </div>
 
@@ -420,6 +464,27 @@ function CtrlBtn({ children, onClick, title, accent }) {
       borderRadius: 9, color: "#f0eee8", fontSize: 13, cursor: "pointer",
       fontFamily: "'DM Mono', monospace", display: "flex", alignItems: "center", justifyContent: "center",
     }}>{children}</button>
+  );
+}
+
+/* =================== PROGRESSO DE SÉRIES =================== */
+function SetProgress({ done, total }) {
+  const complete = total > 0 && done >= total;
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 5 }} title={`${done} de ${total} séries concluídas`}>
+      <div style={{ display: "flex", gap: 3 }}>
+        {Array.from({ length: total }).map((_, i) => (
+          <span key={i} style={{
+            width: 7, height: 7, borderRadius: "50%",
+            background: i < done ? "#7CFC9B" : "rgba(255,255,255,0.12)",
+            transition: "background 0.2s",
+          }} />
+        ))}
+      </div>
+      <span style={{ fontFamily: "'DM Mono', monospace", fontSize: 10, color: complete ? "#7CFC9B" : "#888" }}>
+        {done}/{total}
+      </span>
+    </div>
   );
 }
 
