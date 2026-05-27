@@ -68,7 +68,7 @@ export const profiles = {
       {
         id: "A", theme: "Peito · Ombros · Glúteos · Bíceps",
         exercises: [
-          { name: "Supino Reto com Halteres", sets: "4", reps: "6–8", rest: "3 min", rir: "2 RIR", muscles: "Peitoral, Tríceps, Deltoide Ant.", note: "Prioridade #1 — composição máxima de carga", priority: true },
+          { name: "Supino Reto com Halteres", sets: "4", reps: "8-10", rest: "2-3 min", rir: "1 RIR", muscles: "Peitoral, Tríceps, Deltoide Ant.", note: "Prioridade #1 — composição máxima de carga", priority: true },
           { name: "Desenvolvimento com Halteres", sets: "4", reps: "10–12", rest: "2 min", rir: "2 RIR", muscles: "Deltoide Médio e Ant., Tríceps", note: "Amplitude completa — não tranque no topo", priority: true },
           { name: "Hip Thrust com Barra", sets: "4", reps: "10–12", rest: "2 min", rir: "1 RIR", muscles: "Glúteo Máximo, Isquiotibiais", note: "Pausa de 2s no topo — foco neurológico", priority: true },
           { name: "Remada Curvada com Barra", sets: "3", reps: "8–10", rest: "2 min", rir: "2 RIR", muscles: "Dorsal, Romboides, Bíceps", note: "" },
