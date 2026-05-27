@@ -53,6 +53,9 @@ export default function WorkoutTab({ who, p }) {
   // Não persiste — some ao recarregar / trocar de dia ou perfil.
   const [completedSets, setCompletedSets] = useState({});
 
+  // Trava anti-duplicata: vira true após salvar e volta a false ao editar qualquer carga.
+  const [savedOk, setSavedOk] = useState(false);
+
   const day = p.days.find((d) => d.id === activeDay);
 
   async function refresh() {
@@ -63,9 +66,9 @@ export default function WorkoutTab({ who, p }) {
   }
 
   // Ao trocar de perfil: volta pro treino A, limpa rascunho/progresso e recarrega histórico
-  useEffect(() => { setActiveDay("A"); setDraft({}); setMsg(""); setCompletedSets({}); refresh(); }, [who]);
+  useEffect(() => { setActiveDay("A"); setDraft({}); setMsg(""); setCompletedSets({}); setSavedOk(false); refresh(); }, [who]);
   // Ao trocar de dia: limpa rascunho, progresso e mensagem (o histórico já está carregado)
-  useEffect(() => { setDraft({}); setMsg(""); setCompletedSets({}); }, [activeDay]);
+  useEffect(() => { setDraft({}); setMsg(""); setCompletedSets({}); setSavedOk(false); }, [activeDay]);
 
   /* ---------- Áudio (chime suave gerado via Web Audio) ---------- */
   function ensureAudio() {
@@ -175,6 +178,7 @@ export default function WorkoutTab({ who, p }) {
   }, [logs]);
 
   function setCell(exName, idx, field, value) {
+    setSavedOk(false); // editou algo → libera o botão de salvar de novo
     setDraft((d) => {
       const rows = d[exName]
         ? [...d[exName]]
@@ -196,7 +200,7 @@ export default function WorkoutTab({ who, p }) {
         count++;
       }
       if (count === 0) { setMsg("Preencha pelo menos uma série para salvar."); }
-      else { setMsg(`✅ Treino ${activeDay} salvo (${count} exercício${count > 1 ? "s" : ""})!`); setDraft({}); setCompletedSets({}); await refresh(); }
+      else { setMsg(`✅ Treino ${activeDay} salvo (${count} exercício${count > 1 ? "s" : ""})! Os valores ficaram preenchidos.`); setSavedOk(true); await refresh(); }
     } catch (e) { setMsg("Erro ao salvar: " + e.message); }
     setSaving(false);
   }
@@ -372,8 +376,9 @@ export default function WorkoutTab({ who, p }) {
       {/* Mensagem + salvar */}
       {loading && <div style={{ textAlign: "center", color: "#555", fontSize: 12, padding: 16 }}>Carregando histórico…</div>}
       {msg && <div style={{ fontSize: 12, color: msg.startsWith("✅") ? "#7CFC9B" : "#ff9b9b", margin: "12px 0", textAlign: "center" }}>{msg}</div>}
-      <button onClick={save} disabled={saving} className="hover-lift" style={saveBtn(p)}>
-        {saving ? "Salvando…" : `💾 Salvar Treino ${activeDay}`}
+      <button onClick={save} disabled={saving || savedOk} className="hover-lift"
+        style={{ ...saveBtn(p), opacity: savedOk ? 0.6 : 1, cursor: savedOk ? "default" : "pointer" }}>
+        {savedOk ? "✓ Salvo" : (saving ? "Salvando…" : `💾 Salvar Treino ${activeDay}`)}
       </button>
 
       {/* Espaçador para a barra do timer não cobrir o botão de salvar */}

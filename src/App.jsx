@@ -80,7 +80,11 @@ export default function App() {
       </div>
 
       <div style={{ maxWidth: 780, margin: "0 auto", padding: "20px 16px 60px" }}>
-        {activeTab === "treinos" && <WorkoutTab who={who} p={p} />}
+        {/* WorkoutTab fica SEMPRE montado (só escondido) para não perder o progresso/valores
+            ao trocar de aba. O estado vive na sessão e some apenas ao recarregar a página. */}
+        <div style={{ display: activeTab === "treinos" ? "block" : "none" }}>
+          <WorkoutTab who={who} p={p} />
+        </div>
         {activeTab === "evolucao" && <ProgressTab who={who} p={p} />}
         {activeTab === "analise" && <AnalysisTab who={who} p={p} />}
         {activeTab === "nutricao" && <NutritionTab who={who} p={p} />}
