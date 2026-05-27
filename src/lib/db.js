@@ -6,6 +6,34 @@ const PHOTO_BUCKET = "progress-photos";
 // sets é um array [{ weight: number, reps: number }]
 
 export async function saveWorkoutLog({ person, dayId, exerciseName, date, sets, notes }) {
+  // Procura um registro já existente (mesmo perfil, exercício e data)
+  const { data: rows, error: selErr } = await supabase
+    .from("workout_logs")
+    .select("id")
+    .eq("person", person)
+    .eq("exercise_name", exerciseName)
+    .eq("date", date)
+    .order("id", { ascending: true })
+    .limit(1);
+  if (selErr) throw selErr;
+ 
+  const existing = rows && rows[0];
+ 
+  if (existing) {
+    // Atualiza o registro do dia em vez de criar outro
+    const payload = { day_id: dayId, sets };
+    if (notes !== undefined) payload.notes = notes; // só mexe em notes se foi informado
+    const { data, error } = await supabase
+      .from("workout_logs")
+      .update(payload)
+      .eq("id", existing.id)
+      .select()
+      .single();
+    if (error) throw error;
+    return data;
+  }
+ 
+  // Não existe ainda → cria
   const { data, error } = await supabase
     .from("workout_logs")
     .insert({ person, day_id: dayId, exercise_name: exerciseName, date, sets, notes })
@@ -14,6 +42,7 @@ export async function saveWorkoutLog({ person, dayId, exerciseName, date, sets, 
   if (error) throw error;
   return data;
 }
+
 
 export async function getWorkoutLogs(person, exerciseName = null) {
   let q = supabase.from("workout_logs").select("*").eq("person", person).order("date", { ascending: false });

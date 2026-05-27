@@ -34,29 +34,47 @@ const RIRBadge = ({ rir, color }) => (
   }}>{rir}</span>
 );
 
+/* ---------- Persistência local do treino em andamento ----------
+   Guarda rascunho + progresso no aparelho p/ sobreviver a recarregar a página.
+   É por aparelho (não sincroniza entre Isa/Luca) — o que sincroniza é o treino salvo. */
+const WIP_KEY = "treino-duo:wip";
+function loadWipPart(part) {
+  try {
+    const raw = typeof localStorage !== "undefined" ? localStorage.getItem(WIP_KEY) : null;
+    const obj = raw ? JSON.parse(raw) : {};
+    return obj[part] || {};
+  } catch { return {}; }
+}
+
 export default function WorkoutTab({ who, p }) {
   const [activeDay, setActiveDay] = useState("A");
   const [date, setDate] = useState(today());
-  const [draft, setDraft] = useState({});
   const [logs, setLogs] = useState([]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [msg, setMsg] = useState("");
 
   // ----- Timer de descanso -----
-  // timer: { label, maxSets, total, remaining, endAt, running, done } | null
+  // timer: { key, label, maxSets, total, remaining, endAt, running, done } | null
   const [timer, setTimer] = useState(null);
   const [muted, setMuted] = useState(false);
   const audioCtxRef = useRef(null);
 
-  // Séries concluídas nesta sessão: { [nomeExercício]: quantidade }.
-  // Não persiste — some ao recarregar / trocar de dia ou perfil.
-  const [completedSets, setCompletedSets] = useState({});
+  // ----- Estado do treino em andamento, indexado por "perfil:dia:data" -----
+  // Persiste no aparelho: sobrevive a trocas de aba/perfil/dia E a recarregar a página.
+  // A data na chave faz cada treino ter o seu progresso (não vem "sujo" do dia anterior).
+  const [draftMap, setDraftMap] = useState(() => loadWipPart("draftMap"));       // { "isa:A:2026-05-27": { [ex]: linhas } }
+  const [completedMap, setCompletedMap] = useState(() => loadWipPart("completedMap")); // { "isa:A:2026-05-27": { [ex]: nº } }
 
-  // Trava anti-duplicata: vira true após salvar e volta a false ao editar qualquer carga.
-  const [savedOk, setSavedOk] = useState(false);
+  const day = p.days.find((d) => d.id === activeDay) || p.days[0];
+  const key = `${who}:${activeDay}:${date}`;
+  const draft = draftMap[key] || {};
+  const completedSets = completedMap[key] || {};
 
-  const day = p.days.find((d) => d.id === activeDay);
+  // Persiste o treino em andamento no aparelho sempre que mudar
+  useEffect(() => {
+    try { localStorage.setItem(WIP_KEY, JSON.stringify({ draftMap, completedMap })); } catch { /* storage cheio/indisponível: ignora */ }
+  }, [draftMap, completedMap]);
 
   async function refresh() {
     setLoading(true);
@@ -65,10 +83,18 @@ export default function WorkoutTab({ who, p }) {
     setLoading(false);
   }
 
-  // Ao trocar de perfil: volta pro treino A, limpa rascunho/progresso e recarrega histórico
-  useEffect(() => { setActiveDay("A"); setDraft({}); setMsg(""); setCompletedSets({}); setSavedOk(false); refresh(); }, [who]);
-  // Ao trocar de dia: limpa rascunho, progresso e mensagem (o histórico já está carregado)
-  useEffect(() => { setDraft({}); setMsg(""); setCompletedSets({}); setSavedOk(false); }, [activeDay]);
+  // Ao trocar de perfil: recarrega o histórico do novo perfil (sem apagar o treino em andamento)
+  useEffect(() => { setMsg(""); setLogs([]); refresh(); }, [who]);
+  // Ao trocar de dia: só limpa a mensagem (rascunho/progresso ficam guardados por perfil:dia:data)
+  useEffect(() => { setMsg(""); }, [activeDay]);
+
+  /* ---------- Patches do estado por "perfil:dia:data" ---------- */
+  function patchDraft(k, updater) {
+    setDraftMap((m) => ({ ...m, [k]: updater(m[k] || {}) }));
+  }
+  function patchCompleted(k, updater) {
+    setCompletedMap((m) => ({ ...m, [k]: updater(m[k] || {}) }));
+  }
 
   /* ---------- Áudio (chime suave gerado via Web Audio) ---------- */
   function ensureAudio() {
@@ -104,7 +130,8 @@ export default function WorkoutTab({ who, p }) {
   /* ---------- Controles do timer ---------- */
   function startRest(seconds, label, maxSets) {
     ensureAudio(); // precisa rodar dentro do gesto de clique p/ desbloquear o áudio
-    setTimer({ label, maxSets, total: seconds, remaining: seconds, endAt: Date.now() + seconds * 1000, running: true, done: false });
+    // guarda a "key" do treino atual p/ marcar a série no perfil/dia/data certo, mesmo se trocar depois
+    setTimer({ key, label, maxSets, total: seconds, remaining: seconds, endAt: Date.now() + seconds * 1000, running: true, done: false });
   }
   function pauseResume() {
     setTimer((t) => {
@@ -123,22 +150,21 @@ export default function WorkoutTab({ who, p }) {
   }
   function stopTimer() { setTimer(null); }
 
-  /* ---------- Progresso de séries (apenas nesta sessão) ---------- */
-  // Marca a próxima série pendente do exercício como concluída, sem passar do total de séries.
-  function markSetDone(exName, maxSets) {
-    setCompletedSets((c) => {
-      const cur = c[exName] || 0;
+  /* ---------- Progresso de séries ---------- */
+  // Marca a próxima série pendente do exercício como concluída, sem passar do total.
+  function markSetDone(k, exName, maxSets) {
+    patchCompleted(k, (cc) => {
+      const cur = cc[exName] || 0;
       const max = maxSets || cur + 1;
-      return cur >= max ? c : { ...c, [exName]: cur + 1 };
+      return cur >= max ? cc : { ...cc, [exName]: cur + 1 };
     });
   }
-  // Ajuste manual ao tocar no indicador de uma série (o progresso é sequencial).
-  // Clicar numa série já feita "recua" até ela; numa pendente, "avança" até ela.
+  // Ajuste manual ao tocar no indicador de uma série (progresso é sequencial).
   function toggleSet(exName, idx, total) {
-    setCompletedSets((c) => {
-      const cur = c[exName] || 0;
+    patchCompleted(key, (cc) => {
+      const cur = cc[exName] || 0;
       const next = idx < cur ? idx : Math.min(total, idx + 1);
-      return { ...c, [exName]: next };
+      return { ...cc, [exName]: next };
     });
   }
 
@@ -152,8 +178,8 @@ export default function WorkoutTab({ who, p }) {
       if (rem <= 0) {
         if (!muted) playChime();
         buzz();
-        // ✅ ao zerar o descanso, marca a próxima série pendente deste exercício
-        markSetDone(timer.label, timer.maxSets);
+        // ✅ ao zerar o descanso, marca a próxima série pendente — no perfil/dia/data em que o timer começou
+        markSetDone(timer.key, timer.label, timer.maxSets);
         setTimer((t) => (t ? { ...t, running: false, endAt: null, remaining: 0, done: true } : t));
         return;
       }
@@ -177,14 +203,24 @@ export default function WorkoutTab({ who, p }) {
     return map;
   }, [logs]);
 
+  // Valores de partida de um exercício, vindos do último treino salvo (Supabase).
+  // É o que deixa os campos já preenchidos "para a próxima vez".
+  function baseRows(ex) {
+    const n = setCount(ex.sets);
+    const last = (logsByExercise[ex.name] || [])[0];
+    return Array.from({ length: n }, (_, idx) => ({
+      weight: last?.sets?.[idx]?.weight != null ? String(last.sets[idx].weight) : "",
+      reps: last?.sets?.[idx]?.reps != null ? String(last.sets[idx].reps) : "",
+    }));
+  }
+
   function setCell(exName, idx, field, value) {
-    setSavedOk(false); // editou algo → libera o botão de salvar de novo
-    setDraft((d) => {
-      const rows = d[exName]
-        ? [...d[exName]]
-        : Array.from({ length: setCount(day.exercises.find((e) => e.name === exName).sets) }, () => ({ weight: "", reps: "" }));
+    patchDraft(key, (dd) => {
+      const ex = day.exercises.find((e) => e.name === exName);
+      // ao tocar pela 1ª vez, parte dos valores do último treino (não zera as outras séries)
+      const rows = dd[exName] ? [...dd[exName]] : baseRows(ex);
       rows[idx] = { ...rows[idx], [field]: value };
-      return { ...d, [exName]: rows };
+      return { ...dd, [exName]: rows };
     });
   }
 
@@ -193,14 +229,18 @@ export default function WorkoutTab({ who, p }) {
     try {
       let count = 0;
       for (const ex of day.exercises) {
-        const rows = (draft[ex.name] || []).filter((r) => r.weight !== "" || r.reps !== "");
-        if (rows.length === 0) continue;
-        const sets = rows.map((r) => ({ weight: Number(r.weight) || 0, reps: Number(r.reps) || 0 }));
+        const edited = !!draft[ex.name];                       // mexeu nos campos
+        const done = (completedSets[ex.name] || 0) > 0;        // marcou alguma série
+        if (!edited && !done) continue;                        // exercício não realizado hoje → não grava
+        const rowsToSave = (draft[ex.name] || baseRows(ex)).filter((r) => r.weight !== "" || r.reps !== "");
+        if (rowsToSave.length === 0) continue;
+        const sets = rowsToSave.map((r) => ({ weight: Number(r.weight) || 0, reps: Number(r.reps) || 0 }));
+        // saveWorkoutLog faz upsert: se já existe registro deste exercício/data, atualiza em vez de duplicar
         await saveWorkoutLog({ person: who, dayId: activeDay, exerciseName: ex.name, date, sets });
         count++;
       }
-      if (count === 0) { setMsg("Preencha pelo menos uma série para salvar."); }
-      else { setMsg(`✅ Treino ${activeDay} salvo (${count} exercício${count > 1 ? "s" : ""})! Os valores ficaram preenchidos.`); setSavedOk(true); await refresh(); }
+      if (count === 0) { setMsg("Marque as séries feitas ou edite algum peso para salvar."); }
+      else { setMsg(`✅ Treino ${activeDay} salvo (${count} exercício${count > 1 ? "s" : ""})! Os valores ficaram preenchidos.`); await refresh(); }
     } catch (e) { setMsg("Erro ao salvar: " + e.message); }
     setSaving(false);
   }
@@ -253,11 +293,12 @@ export default function WorkoutTab({ who, p }) {
           const exLogs = logsByExercise[ex.name] || [];
           const pr = bestSet(exLogs);
           const last = exLogs[0];
-          const rows = draft[ex.name] || Array.from({ length: setCount(ex.sets) }, () => ({ weight: "", reps: "" }));
           const restSecs = parseRestSeconds(ex.rest);
-          const isResting = timer && !timer.done && timer.label === ex.name;
           const totalSets = setCount(ex.sets);
           const doneSets = completedSets[ex.name] || 0;
+          const isResting = timer && !timer.done && timer.key === key && timer.label === ex.name;
+          // valores mostrados: o que está no rascunho (editado) ou o último treino salvo
+          const rows = draft[ex.name] || baseRows(ex);
           return (
             <div key={i} className="ex-row" style={{
               background: i % 2 === 0 ? "rgba(255,255,255,0.025)" : "transparent",
@@ -354,13 +395,11 @@ export default function WorkoutTab({ who, p }) {
                             fontFamily: "'DM Mono', monospace",
                             display: "flex", alignItems: "center", justifyContent: "center",
                           }}>{isDone ? "✓" : idx + 1}</button>
-                        <input type="number" inputMode="decimal"
-                          placeholder={last?.sets?.[idx]?.weight != null ? String(last.sets[idx].weight) : "kg"}
+                        <input type="number" inputMode="decimal" placeholder="kg"
                           value={r.weight}
                           onChange={(e) => setCell(ex.name, idx, "weight", e.target.value)} style={miniInput} />
                         <span style={{ color: "#555", fontSize: 12 }}>×</span>
-                        <input type="number" inputMode="numeric"
-                          placeholder={last?.sets?.[idx]?.reps != null ? String(last.sets[idx].reps) : "reps"}
+                        <input type="number" inputMode="numeric" placeholder="reps"
                           value={r.reps}
                           onChange={(e) => setCell(ex.name, idx, "reps", e.target.value)} style={miniInput} />
                       </div>
@@ -376,9 +415,8 @@ export default function WorkoutTab({ who, p }) {
       {/* Mensagem + salvar */}
       {loading && <div style={{ textAlign: "center", color: "#555", fontSize: 12, padding: 16 }}>Carregando histórico…</div>}
       {msg && <div style={{ fontSize: 12, color: msg.startsWith("✅") ? "#7CFC9B" : "#ff9b9b", margin: "12px 0", textAlign: "center" }}>{msg}</div>}
-      <button onClick={save} disabled={saving || savedOk} className="hover-lift"
-        style={{ ...saveBtn(p), opacity: savedOk ? 0.6 : 1, cursor: savedOk ? "default" : "pointer" }}>
-        {savedOk ? "✓ Salvo" : (saving ? "Salvando…" : `💾 Salvar Treino ${activeDay}`)}
+      <button onClick={save} disabled={saving} className="hover-lift" style={saveBtn(p)}>
+        {saving ? "Salvando…" : `💾 Salvar Treino ${activeDay}`}
       </button>
 
       {/* Espaçador para a barra do timer não cobrir o botão de salvar */}
