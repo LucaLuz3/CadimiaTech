@@ -185,6 +185,22 @@ export async function swapPlanExercise(placementId, newExerciseId) {
   return data;
 }
 
+// Persiste a nova ordem dos exercícios de um dia: grava position = índice
+// para cada placement, na ordem recebida. Os ids devem ser os placement ids.
+export async function reorderPlanExercises(orderedPlacementIds) {
+  const now = new Date().toISOString();
+  const results = await Promise.all(
+    (orderedPlacementIds || []).map((id, idx) =>
+      supabase
+        .from("plan_exercises")
+        .update({ position: idx, updated_at: now })
+        .eq("id", id)
+    )
+  );
+  const failed = results.find((r) => r.error);
+  if (failed) throw failed.error;
+}
+
 // "Remover" = marcar inativo. Some da tela mas preserva os logs antigos.
 export async function deactivatePlanExercise(id) {
   const { error } = await supabase

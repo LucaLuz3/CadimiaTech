@@ -2,6 +2,7 @@ import { useState, useEffect, useMemo, useRef } from "react";
 import {
   saveWorkoutLog, getWorkoutLogs, bestSet,
   updatePlanExercise, addPlanExercise, deactivatePlanExercise, swapPlanExercise,
+  reorderPlanExercises,
   addCatalogExercise, updateCatalogExercise,
 } from "../lib/db";
 
@@ -63,6 +64,12 @@ export default function WorkoutTab({ who, p, catalog = [], exLoading = false, on
   const [editing, setEditing] = useState(null);   // exercício sendo editado/criado (objeto) | null
   const [savingEx, setSavingEx] = useState(false);
 
+  // ----- Reordenação (Fase 2) -----
+  // Ordem otimista por dia enquanto persiste: { [dayId]: [placementId, ...] }.
+  // Dá feedback instantâneo sem esperar o round-trip; some quando o banco confirma.
+  const [orderOverride, setOrderOverride] = useState({});
+  const [reordering, setReordering] = useState(false);
+
   // ----- Timer de descanso -----
   // timer: { key, label, maxSets, total, remaining, endAt, running, done } | null
   const [timer, setTimer] = useState(null);
@@ -79,6 +86,19 @@ export default function WorkoutTab({ who, p, catalog = [], exLoading = false, on
   const key = `${who}:${activeDay}:${date}`;
   const draft = draftMap[key] || {};
   const completedSets = completedMap[key] || {};
+
+  // Ordem exibida do dia: aplica o override otimista (reordenação em andamento),
+  // caindo na ordem que veio do banco quando não há override.
+  const orderedExercises = (() => {
+    const base = day?.exercises || [];
+    const ov = orderOverride[activeDay];
+    if (!ov) return base;
+    const byId = new Map(base.map((e) => [e.placementId, e]));
+    const ordered = ov.map((id) => byId.get(id)).filter(Boolean);
+    const inOv = new Set(ov);
+    base.forEach((e) => { if (!inOv.has(e.placementId)) ordered.push(e); }); // segurança
+    return ordered;
+  })();
 
   // Persiste o treino em andamento no aparelho sempre que mudar
   useEffect(() => {
@@ -404,6 +424,33 @@ export default function WorkoutTab({ who, p, catalog = [], exLoading = false, on
     } catch (e) { setMsg("Erro ao remover: " + e.message); }
   }
 
+  /* ---------- Reordenar (Fase 2) ---------- */
+  // Move o exercício do índice `index` (na ordem exibida) para cima (-1) ou baixo (+1).
+  function moveEx(orderedList, index, dir) {
+    const j = index + dir;
+    if (j < 0 || j >= orderedList.length) return;
+    const newList = orderedList.slice();
+    [newList[index], newList[j]] = [newList[j], newList[index]];
+    const ids = newList.map((e) => e.placementId);
+    const dayId = activeDay;
+    setOrderOverride((o) => ({ ...o, [dayId]: ids })); // feedback imediato
+    persistOrder(dayId, ids);
+  }
+
+  async function persistOrder(dayId, ids) {
+    setReordering(true); setMsg("");
+    try {
+      await reorderPlanExercises(ids);
+      if (onExercisesChanged) await onExercisesChanged();
+      // Limpa o override só se ninguém mexeu de novo nesse dia nesse meio-tempo.
+      setOrderOverride((o) => {
+        if (!o[dayId] || o[dayId].join() !== ids.join()) return o;
+        const n = { ...o }; delete n[dayId]; return n;
+      });
+    } catch (e) { setMsg("Erro ao reordenar: " + e.message); }
+    setReordering(false);
+  }
+
   return (
     <div className="fade-in">
       {/* Day Selector */}
@@ -460,7 +507,7 @@ export default function WorkoutTab({ who, p, catalog = [], exLoading = false, on
 
       {/* Exercises */}
       <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
-        {day.exercises.map((ex, i) => {
+        {orderedExercises.map((ex, i) => {
           const exLogs = logsFor(ex);
           const pr = bestSet(exLogs);
           const last = exLogs[0];
@@ -471,7 +518,7 @@ export default function WorkoutTab({ who, p, catalog = [], exLoading = false, on
           // valores mostrados: o que está no rascunho (editado) ou o último treino salvo
           const rows = draft[ex.name] || baseRows(ex);
           return (
-            <div key={i} className="ex-row" style={{
+            <div key={ex.placementId || ex.id || ex.name} className="ex-row" style={{
               background: i % 2 === 0 ? "rgba(255,255,255,0.025)" : "transparent",
               border: `1px solid ${ex.priority ? p.color + "44" : "rgba(255,255,255,0.06)"}`,
               borderLeft: ex.priority ? `3px solid ${p.color}` : "1px solid rgba(255,255,255,0.06)",
@@ -497,6 +544,12 @@ export default function WorkoutTab({ who, p, catalog = [], exLoading = false, on
                 <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                   {editMode ? (
                     <>
+                      <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+                        <button onClick={() => moveEx(orderedExercises, i, -1)} disabled={i === 0 || reordering}
+                          title="Mover para cima" className="hover-lift" style={arrowBtn(p.color, i === 0 || reordering)}>▲</button>
+                        <button onClick={() => moveEx(orderedExercises, i, +1)} disabled={i === orderedExercises.length - 1 || reordering}
+                          title="Mover para baixo" className="hover-lift" style={arrowBtn(p.color, i === orderedExercises.length - 1 || reordering)}>▼</button>
+                      </div>
                       <button onClick={() => openEdit(ex)} title="Editar exercício" className="hover-lift" style={miniActionBtn(p.color)}>✎</button>
                       <button onClick={() => removeEx(ex)} title="Remover do plano" className="hover-lift" style={miniActionBtn("#ff7676")}>🗑</button>
                     </>
@@ -942,6 +995,14 @@ const miniActionBtn = (color) => ({
   width: 30, height: 30, borderRadius: 8, padding: 0, cursor: "pointer",
   background: color + "1a", border: `1px solid ${color}55`, color,
   fontSize: 13, display: "flex", alignItems: "center", justifyContent: "center",
+});
+const arrowBtn = (color, disabled) => ({
+  width: 26, height: 18, borderRadius: 5, padding: 0,
+  cursor: disabled ? "default" : "pointer",
+  background: disabled ? "rgba(255,255,255,0.03)" : color + "1a",
+  border: `1px solid ${disabled ? "#2a2a35" : color + "55"}`,
+  color: disabled ? "#3a3a45" : color,
+  fontSize: 9, display: "flex", alignItems: "center", justifyContent: "center",
 });
 const fullInput = {
   width: "100%", boxSizing: "border-box",
