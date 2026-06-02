@@ -1,5 +1,8 @@
 import { useState, useEffect, useMemo, useRef } from "react";
-import { saveWorkoutLog, getWorkoutLogs, bestSet } from "../lib/db";
+import {
+  saveWorkoutLog, getWorkoutLogs, bestSet,
+  updatePlanExercise, addPlanExercise, deactivatePlanExercise,
+} from "../lib/db";
 
 const today = () => new Date().toISOString().slice(0, 10);
 const fmtShort = (d) => new Date(d + "T00:00:00").toLocaleDateString("pt-BR", { day: "2-digit", month: "2-digit" });
@@ -46,13 +49,18 @@ function loadWipPart(part) {
   } catch { return {}; }
 }
 
-export default function WorkoutTab({ who, p }) {
+export default function WorkoutTab({ who, p, exLoading = false, onExercisesChanged }) {
   const [activeDay, setActiveDay] = useState("A");
   const [date, setDate] = useState(today());
   const [logs, setLogs] = useState([]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [msg, setMsg] = useState("");
+
+  // ----- Modo de edição do plano (Fase 1: editar / adicionar / remover) -----
+  const [editMode, setEditMode] = useState(false);
+  const [editing, setEditing] = useState(null);   // exercício sendo editado/criado (objeto) | null
+  const [savingEx, setSavingEx] = useState(false);
 
   // ----- Timer de descanso -----
   // timer: { key, label, maxSets, total, remaining, endAt, running, done } | null
@@ -225,17 +233,42 @@ export default function WorkoutTab({ who, p }) {
   }, [timer?.done]);
 
   /* ---------- Log de séries ---------- */
+  // Identificador estável do exercício: usa o id do banco; cai no nome se faltar.
+  const exKey = (ex) => ex.id || ex.name;
+
+  // Indexa logs por id E por nome — assim casamos tanto registros novos
+  // (com exercise_id) quanto históricos antigos (só com exercise_name).
   const logsByExercise = useMemo(() => {
-    const map = {};
-    for (const l of logs) (map[l.exercise_name] ||= []).push(l);
-    return map;
+    const byId = {};
+    const byName = {};
+    for (const l of logs) {
+      if (l.exercise_id) (byId[l.exercise_id] ||= []).push(l);
+      if (l.exercise_name) (byName[l.exercise_name] ||= []).push(l);
+    }
+    return { byId, byName };
   }, [logs]);
+
+  // Retorna os logs de um exercício, juntando os casados por id e por nome
+  // (sem duplicar) e ordenando do mais recente para o mais antigo.
+  function logsFor(ex) {
+    const a = ex.id ? (logsByExercise.byId[ex.id] || []) : [];
+    const b = logsByExercise.byName[ex.name] || [];
+    const seen = new Set();
+    const merged = [];
+    for (const l of [...a, ...b]) {
+      if (seen.has(l.id)) continue;
+      seen.add(l.id);
+      merged.push(l);
+    }
+    merged.sort((x, y) => (x.date < y.date ? 1 : x.date > y.date ? -1 : 0));
+    return merged;
+  }
 
   // Valores de partida de um exercício, vindos do último treino salvo (Supabase).
   // É o que deixa os campos já preenchidos "para a próxima vez".
   function baseRows(ex) {
     const n = setCount(ex.sets);
-    const last = (logsByExercise[ex.name] || [])[0];
+    const last = logsFor(ex)[0];
     return Array.from({ length: n }, (_, idx) => ({
       weight: last?.sets?.[idx]?.weight != null ? String(last.sets[idx].weight) : "",
       reps: last?.sets?.[idx]?.reps != null ? String(last.sets[idx].reps) : "",
@@ -263,14 +296,63 @@ export default function WorkoutTab({ who, p }) {
         const rowsToSave = (draft[ex.name] || baseRows(ex)).filter((r) => r.weight !== "" || r.reps !== "");
         if (rowsToSave.length === 0) continue;
         const sets = rowsToSave.map((r) => ({ weight: Number(r.weight) || 0, reps: Number(r.reps) || 0 }));
-        // saveWorkoutLog faz upsert: se já existe registro deste exercício/data, atualiza em vez de duplicar
-        await saveWorkoutLog({ person: who, dayId: activeDay, exerciseName: ex.name, date, sets });
+        // saveWorkoutLog faz upsert pelo id estável do exercício (cai no nome se não houver id)
+        await saveWorkoutLog({ person: who, dayId: activeDay, exerciseId: ex.id, exerciseName: ex.name, date, sets });
         count++;
       }
       if (count === 0) { setMsg("Marque as séries feitas ou edite algum peso para salvar."); }
       else { setMsg(`✅ Treino ${activeDay} salvo (${count} exercício${count > 1 ? "s" : ""})! Os valores ficaram preenchidos.`); await refresh(); }
     } catch (e) { setMsg("Erro ao salvar: " + e.message); }
     setSaving(false);
+  }
+
+  /* ---------- Edição do plano (Fase 1) ---------- */
+  const BLANK_EX = { name: "", sets: "3", reps: "10–12", rest: "90s", rir: "1 RIR", muscles: "", note: "", priority: false };
+
+  function openAdd() { setEditing({ _mode: "add", ...BLANK_EX }); }
+  function openEdit(ex) {
+    setEditing({
+      _mode: "edit", id: ex.id,
+      name: ex.name, sets: ex.sets, reps: ex.reps, rest: ex.rest,
+      rir: ex.rir, muscles: ex.muscles, note: ex.note, priority: !!ex.priority,
+    });
+  }
+  function closeEditor() { setEditing(null); }
+
+  async function saveEx() {
+    if (!editing) return;
+    if (!editing.name?.trim()) { setMsg("Dê um nome ao exercício."); return; }
+    setSavingEx(true); setMsg("");
+    try {
+      const fields = {
+        name: editing.name.trim(), sets: editing.sets, reps: editing.reps,
+        rest: editing.rest, rir: editing.rir, muscles: editing.muscles,
+        note: editing.note, priority: !!editing.priority,
+      };
+      if (editing._mode === "add") {
+        await addPlanExercise({ person: who, dayId: activeDay, fields });
+      } else {
+        await updatePlanExercise(editing.id, fields);
+      }
+      setEditing(null);
+      if (onExercisesChanged) await onExercisesChanged();
+      setMsg("✅ Plano atualizado.");
+    } catch (e) { setMsg("Erro ao salvar exercício: " + e.message); }
+    setSavingEx(false);
+  }
+
+  async function removeEx(ex) {
+    if (!ex.id) { setMsg("Este exercício ainda não está no banco — recarregue a página."); return; }
+    const ok = typeof window !== "undefined"
+      ? window.confirm(`Remover "${ex.name}" do Treino ${activeDay}?\n\nO histórico de cargas é preservado — o exercício só deixa de aparecer no plano.`)
+      : true;
+    if (!ok) return;
+    setMsg("");
+    try {
+      await deactivatePlanExercise(ex.id);
+      if (onExercisesChanged) await onExercisesChanged();
+      setMsg(`"${ex.name}" removido do plano (histórico preservado).`);
+    } catch (e) { setMsg("Erro ao remover: " + e.message); }
   }
 
   return (
@@ -312,13 +394,25 @@ export default function WorkoutTab({ who, p }) {
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
           <span style={{ fontSize: 10, color: "#666", fontFamily: "'DM Mono', monospace", textTransform: "uppercase", letterSpacing: "0.06em" }}>Data</span>
           <input type="date" value={date} max={today()} onChange={(e) => setDate(e.target.value)} style={dateInput} />
+          <button
+            onClick={() => { setEditMode((v) => !v); setEditing(null); }}
+            className="hover-lift"
+            title={editMode ? "Sair do modo de edição" : "Editar exercícios do plano"}
+            style={{
+              background: editMode ? p.color + "33" : "rgba(255,255,255,0.05)",
+              border: `1px solid ${editMode ? p.color : "#2a2a35"}`,
+              borderRadius: 8, padding: "10px 12px", cursor: "pointer",
+              color: editMode ? p.accent : "#888", fontSize: 12, whiteSpace: "nowrap",
+            }}>
+            {editMode ? "✓ Editando" : "✎ Editar plano"}
+          </button>
         </div>
       </div>
 
       {/* Exercises */}
       <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
         {day.exercises.map((ex, i) => {
-          const exLogs = logsByExercise[ex.name] || [];
+          const exLogs = logsFor(ex);
           const pr = bestSet(exLogs);
           const last = exLogs[0];
           const restSecs = parseRestSeconds(ex.rest);
@@ -350,10 +444,19 @@ export default function WorkoutTab({ who, p }) {
                     {ex.priority && <span style={{ marginLeft: 6, fontSize: 9, color: p.accent, fontFamily: "'DM Mono', monospace", background: p.color + "22", borderRadius: 3, padding: "1px 5px" }}>PRIORIDADE</span>}
                   </div>
                 </div>
-                {/* Progresso de séries + RIR */}
+                {/* Progresso de séries + RIR (ou ações de edição) */}
                 <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                  <SetProgress done={doneSets} total={totalSets} />
-                  <RIRBadge rir={ex.rir} color={p.color} />
+                  {editMode ? (
+                    <>
+                      <button onClick={() => openEdit(ex)} title="Editar exercício" className="hover-lift" style={miniActionBtn(p.color)}>✎</button>
+                      <button onClick={() => removeEx(ex)} title="Remover do plano" className="hover-lift" style={miniActionBtn("#ff7676")}>🗑</button>
+                    </>
+                  ) : (
+                    <>
+                      <SetProgress done={doneSets} total={totalSets} />
+                      <RIRBadge rir={ex.rir} color={p.color} />
+                    </>
+                  )}
                 </div>
               </div>
 
@@ -439,6 +542,24 @@ export default function WorkoutTab({ who, p }) {
           );
         })}
       </div>
+
+      {/* Adicionar exercício (modo edição) */}
+      {editMode && (
+        <button onClick={openAdd} className="hover-lift" style={{
+          width: "100%", marginTop: 10, padding: "12px",
+          background: "rgba(255,255,255,0.04)", border: `1px dashed ${p.color}66`,
+          borderRadius: 10, color: p.accent, fontSize: 13, cursor: "pointer",
+        }}>＋ Adicionar exercício ao Treino {activeDay}</button>
+      )}
+
+      {/* Editor de exercício */}
+      {editing && (
+        <ExerciseEditor
+          editing={editing} setEditing={setEditing} p={p}
+          dayId={activeDay} saving={savingEx}
+          onSave={saveEx} onClose={closeEditor}
+        />
+      )}
 
       {/* Mensagem + salvar */}
       {loading && <div style={{ textAlign: "center", color: "#555", fontSize: 12, padding: 16 }}>Carregando histórico…</div>}
@@ -559,6 +680,106 @@ function SetProgress({ done, total }) {
   );
 }
 
+/* =================== EDITOR DE EXERCÍCIO =================== */
+function ExerciseEditor({ editing, setEditing, p, dayId, saving, onSave, onClose }) {
+  const set = (field, value) => setEditing((e) => ({ ...e, [field]: value }));
+  const isAdd = editing._mode === "add";
+
+  return (
+    <div
+      onClick={onClose}
+      style={{
+        position: "fixed", inset: 0, zIndex: 60, padding: 16,
+        background: "rgba(0,0,0,0.6)", backdropFilter: "blur(4px)",
+        display: "flex", alignItems: "center", justifyContent: "center",
+      }}>
+      <div
+        onClick={(e) => e.stopPropagation()}
+        style={{
+          width: "100%", maxWidth: 460, maxHeight: "90vh", overflowY: "auto",
+          background: "#14141c", border: `1px solid ${p.color}55`,
+          borderRadius: 16, padding: "22px 20px",
+        }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
+          <span style={{ fontFamily: "'Bebas Neue', sans-serif", fontSize: 22, color: p.accent, letterSpacing: "0.05em" }}>
+            {isAdd ? `NOVO EXERCÍCIO · TREINO ${dayId}` : "EDITAR EXERCÍCIO"}
+          </span>
+          <button onClick={onClose} style={{ background: "none", border: "none", color: "#888", fontSize: 20, cursor: "pointer" }}>✕</button>
+        </div>
+
+        <EditorField label="Nome">
+          <input value={editing.name || ""} onChange={(e) => set("name", e.target.value)} style={fullInput} autoFocus placeholder="Ex.: Agachamento Livre" />
+        </EditorField>
+
+        <div style={{ display: "flex", gap: 8 }}>
+          <EditorField label="Séries" flex>
+            <input value={editing.sets || ""} onChange={(e) => set("sets", e.target.value)} style={fullInput} placeholder="4" />
+          </EditorField>
+          <EditorField label="Reps" flex>
+            <input value={editing.reps || ""} onChange={(e) => set("reps", e.target.value)} style={fullInput} placeholder="8–10" />
+          </EditorField>
+        </div>
+
+        <div style={{ display: "flex", gap: 8 }}>
+          <EditorField label="Intervalo" flex>
+            <input value={editing.rest || ""} onChange={(e) => set("rest", e.target.value)} style={fullInput} placeholder="2 min" />
+          </EditorField>
+          <EditorField label="RIR" flex>
+            <input value={editing.rir || ""} onChange={(e) => set("rir", e.target.value)} style={fullInput} placeholder="2 RIR" />
+          </EditorField>
+        </div>
+
+        <EditorField label="Músculos">
+          <input value={editing.muscles || ""} onChange={(e) => set("muscles", e.target.value)} style={fullInput} placeholder="Quadríceps, Glúteos" />
+        </EditorField>
+
+        <EditorField label="Dica (opcional)">
+          <textarea value={editing.note || ""} onChange={(e) => set("note", e.target.value)} style={{ ...fullInput, minHeight: 60, resize: "vertical" }} placeholder="Foco em amplitude…" />
+        </EditorField>
+
+        <label style={{ display: "flex", alignItems: "center", gap: 8, margin: "4px 0 18px", cursor: "pointer", fontSize: 13, color: "#bbb" }}>
+          <input type="checkbox" checked={!!editing.priority} onChange={(e) => set("priority", e.target.checked)} style={{ width: 16, height: 16, accentColor: p.color }} />
+          Marcar como prioridade
+        </label>
+
+        <div style={{ display: "flex", gap: 8 }}>
+          <button onClick={onClose} style={{ flex: 1, padding: "12px", background: "rgba(255,255,255,0.05)", border: "1px solid #2a2a35", borderRadius: 10, color: "#bbb", fontSize: 14, cursor: "pointer" }}>
+            Cancelar
+          </button>
+          <button onClick={onSave} disabled={saving} className="hover-lift" style={{ flex: 1, padding: "12px", background: `linear-gradient(135deg, ${p.color}, ${p.accent})`, border: "none", borderRadius: 10, color: "#0d0d12", fontWeight: 600, fontSize: 14, cursor: "pointer" }}>
+            {saving ? "Salvando…" : (isAdd ? "Adicionar" : "Salvar")}
+          </button>
+        </div>
+
+        {!isAdd && (
+          <p style={{ fontSize: 10, color: "#555", marginTop: 14, lineHeight: 1.6 }}>
+            Renomear é seguro: o histórico de cargas continua ligado a este exercício.
+          </p>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function EditorField({ label: lbl, flex, children }) {
+  return (
+    <div style={{ marginBottom: 12, flex: flex ? 1 : undefined }}>
+      <div style={{ ...label, marginBottom: 5 }}>{lbl}</div>
+      {children}
+    </div>
+  );
+}
+
+const miniActionBtn = (color) => ({
+  width: 30, height: 30, borderRadius: 8, padding: 0, cursor: "pointer",
+  background: color + "1a", border: `1px solid ${color}55`, color,
+  fontSize: 13, display: "flex", alignItems: "center", justifyContent: "center",
+});
+const fullInput = {
+  width: "100%", boxSizing: "border-box",
+  background: "rgba(255,255,255,0.05)", border: "1px solid #2a2a35", borderRadius: 8,
+  padding: "10px 12px", color: "#f0eee8", fontSize: 13, fontFamily: "inherit",
+};
 const label = { color: "#555", fontSize: 9, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 2 };
 const dateInput = {
   background: "rgba(255,255,255,0.05)", border: "1px solid #2a2a35", borderRadius: 8,

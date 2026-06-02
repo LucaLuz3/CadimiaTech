@@ -5,23 +5,25 @@ const PHOTO_BUCKET = "progress-photos";
 /* ---------------- WORKOUT LOGS ---------------- */
 // sets é um array [{ weight: number, reps: number }]
 
-export async function saveWorkoutLog({ person, dayId, exerciseName, date, sets, notes }) {
-  // Procura um registro já existente (mesmo perfil, exercício e data)
-  const { data: rows, error: selErr } = await supabase
+export async function saveWorkoutLog({ person, dayId, exerciseId, exerciseName, date, sets, notes }) {
+  // O vínculo estável é o exerciseId. Se ele existir, procuramos/gravamos por ele
+  // (assim renomear o exercício não duplica nem perde o registro do dia).
+  // Mantemos exercise_name como rótulo de exibição/fallback.
+  let q = supabase
     .from("workout_logs")
     .select("id")
     .eq("person", person)
-    .eq("exercise_name", exerciseName)
-    .eq("date", date)
-    .order("id", { ascending: true })
-    .limit(1);
+    .eq("date", date);
+  q = exerciseId ? q.eq("exercise_id", exerciseId) : q.eq("exercise_name", exerciseName);
+  const { data: rows, error: selErr } = await q.order("id", { ascending: true }).limit(1);
   if (selErr) throw selErr;
- 
+
   const existing = rows && rows[0];
- 
+
   if (existing) {
     // Atualiza o registro do dia em vez de criar outro
-    const payload = { day_id: dayId, sets };
+    const payload = { day_id: dayId, sets, exercise_name: exerciseName };
+    if (exerciseId !== undefined) payload.exercise_id = exerciseId;
     if (notes !== undefined) payload.notes = notes; // só mexe em notes se foi informado
     const { data, error } = await supabase
       .from("workout_logs")
@@ -32,11 +34,11 @@ export async function saveWorkoutLog({ person, dayId, exerciseName, date, sets, 
     if (error) throw error;
     return data;
   }
- 
+
   // Não existe ainda → cria
   const { data, error } = await supabase
     .from("workout_logs")
-    .insert({ person, day_id: dayId, exercise_name: exerciseName, date, sets, notes })
+    .insert({ person, day_id: dayId, exercise_id: exerciseId, exercise_name: exerciseName, date, sets, notes })
     .select()
     .single();
   if (error) throw error;
@@ -67,6 +69,107 @@ export function bestSet(logs) {
     }
   }
   return best;
+}
+
+/* ---------------- PLAN EXERCISES (editáveis pela UI) ---------------- */
+// Os exercícios do plano vivem na tabela plan_exercises. Cada um tem um id
+// estável; os logs referenciam esse id. Renomear NÃO quebra o histórico.
+
+const EX_FIELDS = ["name", "sets", "reps", "rest", "rir", "muscles", "note", "priority"];
+
+// Lê os exercícios ativos de um perfil, agrupados por dia (A/B/C), já ordenados.
+export async function getPlanExercises(person) {
+  const { data, error } = await supabase
+    .from("plan_exercises")
+    .select("*")
+    .eq("person", person)
+    .eq("active", true)
+    .order("day_id", { ascending: true })
+    .order("position", { ascending: true });
+  if (error) throw error;
+  return data || [];
+}
+
+// Semeia a tabela a partir do plans.js na primeira vez (ou se ficar vazia).
+// Lê o plano em memória e insere; é seguro chamar sempre — só age se vazio.
+export async function seedPlanExercisesIfEmpty(person, daysFromPlan) {
+  const { count, error: cErr } = await supabase
+    .from("plan_exercises")
+    .select("id", { count: "exact", head: true })
+    .eq("person", person);
+  if (cErr) throw cErr;
+  if ((count || 0) > 0) return false; // já populado → não faz nada
+
+  const toInsert = [];
+  for (const day of daysFromPlan || []) {
+    (day.exercises || []).forEach((ex, idx) => {
+      toInsert.push({
+        person,
+        day_id: day.id,
+        position: idx,
+        name: ex.name,
+        sets: ex.sets ?? null,
+        reps: ex.reps ?? null,
+        rest: ex.rest ?? null,
+        rir: ex.rir ?? null,
+        muscles: ex.muscles ?? null,
+        note: ex.note ?? null,
+        priority: !!ex.priority,
+        active: true,
+      });
+    });
+  }
+  if (toInsert.length === 0) return false;
+  const { error } = await supabase.from("plan_exercises").insert(toInsert);
+  if (error) throw error;
+  return true;
+}
+
+// Atualiza campos de um exercício. Aceita só os campos editáveis.
+export async function updatePlanExercise(id, patch) {
+  const clean = {};
+  for (const f of EX_FIELDS) if (f in patch) clean[f] = patch[f];
+  clean.updated_at = new Date().toISOString();
+  const { data, error } = await supabase
+    .from("plan_exercises")
+    .update(clean)
+    .eq("id", id)
+    .select()
+    .single();
+  if (error) throw error;
+  return data;
+}
+
+// Adiciona um exercício ao fim de um dia (position = nº de exercícios ativos do dia).
+export async function addPlanExercise({ person, dayId, fields }) {
+  const { count, error: cErr } = await supabase
+    .from("plan_exercises")
+    .select("id", { count: "exact", head: true })
+    .eq("person", person)
+    .eq("day_id", dayId)
+    .eq("active", true);
+  if (cErr) throw cErr;
+
+  const row = { person, day_id: dayId, position: count || 0, active: true, priority: false };
+  for (const f of EX_FIELDS) if (fields && f in fields) row[f] = fields[f];
+  if (!row.name) throw new Error("O exercício precisa de um nome.");
+
+  const { data, error } = await supabase
+    .from("plan_exercises")
+    .insert(row)
+    .select()
+    .single();
+  if (error) throw error;
+  return data;
+}
+
+// "Remover" = marcar inativo. Some da tela mas preserva os logs antigos.
+export async function deactivatePlanExercise(id) {
+  const { error } = await supabase
+    .from("plan_exercises")
+    .update({ active: false, updated_at: new Date().toISOString() })
+    .eq("id", id);
+  if (error) throw error;
 }
 
 /* ---------------- BODY WEIGHT ---------------- */
