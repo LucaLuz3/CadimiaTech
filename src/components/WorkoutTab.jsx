@@ -106,25 +106,53 @@ export default function WorkoutTab({ who, p }) {
       audioCtxRef.current.resume();
     }
   }
+  const CHIME_VOLUME = 0.40;
+  const CHIME_SOUND = "bell3";
+
+  function playTone(freq, t0, dur, peak, type) {
+    const ctx = audioCtxRef.current;
+    if (!ctx) return;
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.type = type || "sine";
+    osc.frequency.value = freq;
+    gain.gain.setValueAtTime(0.0001, t0);
+    gain.gain.exponentialRampToValueAtTime(Math.max(0.0002, peak), t0 + 0.02);
+    gain.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
+    osc.connect(gain); gain.connect(ctx.destination);
+    osc.start(t0); osc.stop(t0 + dur + 0.05);
+  }
+
   function playChime() {
     const ctx = audioCtxRef.current;
     if (!ctx) return;
-    const now = ctx.currentTime;
-    [784, 1047].forEach((freq, i) => { // G5 → C6, sobe leve
-      const osc = ctx.createOscillator();
-      const gain = ctx.createGain();
-      osc.type = "sine";
-      osc.frequency.value = freq;
-      const t0 = now + i * 0.16;
-      gain.gain.setValueAtTime(0.0001, t0);
-      gain.gain.exponentialRampToValueAtTime(0.16, t0 + 0.03);
-      gain.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.5);
-      osc.connect(gain); gain.connect(ctx.destination);
-      osc.start(t0); osc.stop(t0 + 0.55);
-    });
+    const n = ctx.currentTime;
+    const v = CHIME_VOLUME;
+    switch (CHIME_SOUND) {
+      case "current":
+        [784, 1047].forEach((f, i) => playTone(f, n + i * 0.16, 0.5, v, "sine"));
+        break;
+      case "bell3":
+        [0, 0.22, 0.44].forEach((d) => playTone(1047, n + d, 0.32, v, "triangle"));
+        break;
+      case "gym":
+        [0, 0.45].forEach((d) => {
+          playTone(660, n + d, 1.1, v, "sine");
+          playTone(990, n + d, 0.9, v * 0.5, "sine");
+          playTone(1320, n + d, 0.7, v * 0.3, "sine");
+        });
+        break;
+      case "alarm":
+        for (let i = 0; i < 5; i++) playTone(880, n + i * 0.18, 0.12, v, "square");
+        break;
+      case "rise":
+      default:
+        [659, 784, 988, 1319].forEach((f, i) => playTone(f, n + i * 0.18, 0.55, v, "triangle"));
+    }
   }
   function buzz() {
-    if (navigator.vibrate) navigator.vibrate([120, 60, 120]);
+    // curto [120,60,120] · médio [200,100,200,100,200] · forte [400,200,400,200,400]
+    if (navigator.vibrate) navigator.vibrate([200, 100, 200, 100, 200]);
   }
 
   /* ---------- Controles do timer ---------- */
