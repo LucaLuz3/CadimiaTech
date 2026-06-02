@@ -171,6 +171,20 @@ export async function addPlanExercise({ person, dayId, exerciseId, fields }) {
   return data;
 }
 
+// Troca QUAL exercício do catálogo este bloco aponta (substituir movimento).
+// O histórico não se mistura: os logs ficam ligados ao catálogo, não ao bloco.
+export async function swapPlanExercise(placementId, newExerciseId) {
+  if (!newExerciseId) throw new Error("Escolha um exercício.");
+  const { data, error } = await supabase
+    .from("plan_exercises")
+    .update({ exercise_id: newExerciseId, updated_at: new Date().toISOString() })
+    .eq("id", placementId)
+    .select()
+    .single();
+  if (error) throw error;
+  return data;
+}
+
 // "Remover" = marcar inativo. Some da tela mas preserva os logs antigos.
 export async function deactivatePlanExercise(id) {
   const { error } = await supabase
