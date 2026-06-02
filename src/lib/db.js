@@ -92,37 +92,51 @@ export async function getPlanExercises(person) {
 
 // Semeia a tabela a partir do plans.js na primeira vez (ou se ficar vazia).
 // Lê o plano em memória e insere; é seguro chamar sempre — só age se vazio.
+// Guard contra corrida: se a sessão re-disparar o carregamento várias vezes,
+// chamadas concorrentes para o MESMO perfil compartilham a mesma execução,
+// evitando inserir o conjunto de exercícios mais de uma vez.
+const _seedInFlight = {};
 export async function seedPlanExercisesIfEmpty(person, daysFromPlan) {
-  const { count, error: cErr } = await supabase
-    .from("plan_exercises")
-    .select("id", { count: "exact", head: true })
-    .eq("person", person);
-  if (cErr) throw cErr;
-  if ((count || 0) > 0) return false; // já populado → não faz nada
+  if (_seedInFlight[person]) return _seedInFlight[person];
 
-  const toInsert = [];
-  for (const day of daysFromPlan || []) {
-    (day.exercises || []).forEach((ex, idx) => {
-      toInsert.push({
-        person,
-        day_id: day.id,
-        position: idx,
-        name: ex.name,
-        sets: ex.sets ?? null,
-        reps: ex.reps ?? null,
-        rest: ex.rest ?? null,
-        rir: ex.rir ?? null,
-        muscles: ex.muscles ?? null,
-        note: ex.note ?? null,
-        priority: !!ex.priority,
-        active: true,
+  const run = (async () => {
+    const { count, error: cErr } = await supabase
+      .from("plan_exercises")
+      .select("id", { count: "exact", head: true })
+      .eq("person", person);
+    if (cErr) throw cErr;
+    if ((count || 0) > 0) return false; // já populado → não faz nada
+
+    const toInsert = [];
+    for (const day of daysFromPlan || []) {
+      (day.exercises || []).forEach((ex, idx) => {
+        toInsert.push({
+          person,
+          day_id: day.id,
+          position: idx,
+          name: ex.name,
+          sets: ex.sets ?? null,
+          reps: ex.reps ?? null,
+          rest: ex.rest ?? null,
+          rir: ex.rir ?? null,
+          muscles: ex.muscles ?? null,
+          note: ex.note ?? null,
+          priority: !!ex.priority,
+          active: true,
+        });
       });
-    });
-  }
-  if (toInsert.length === 0) return false;
-  const { error } = await supabase.from("plan_exercises").insert(toInsert);
-  if (error) throw error;
-  return true;
+    }
+    if (toInsert.length === 0) return false;
+
+    const { error } = await supabase.from("plan_exercises").insert(toInsert);
+    // 23505 = unique_violation: outra carga/aba já semeou. Tudo certo, ignora.
+    if (error && error.code !== "23505") throw error;
+    return true;
+  })();
+
+  _seedInFlight[person] = run;
+  try { return await run; }
+  finally { delete _seedInFlight[person]; }
 }
 
 // Atualiza campos de um exercício. Aceita só os campos editáveis.
