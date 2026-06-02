@@ -2,6 +2,7 @@ import { useState, useEffect, useMemo, useRef } from "react";
 import {
   saveWorkoutLog, getWorkoutLogs, bestSet,
   updatePlanExercise, addPlanExercise, deactivatePlanExercise,
+  addCatalogExercise, updateCatalogExercise,
 } from "../lib/db";
 
 const today = () => new Date().toISOString().slice(0, 10);
@@ -49,7 +50,7 @@ function loadWipPart(part) {
   } catch { return {}; }
 }
 
-export default function WorkoutTab({ who, p, exLoading = false, onExercisesChanged }) {
+export default function WorkoutTab({ who, p, catalog = [], exLoading = false, onExercisesChanged }) {
   const [activeDay, setActiveDay] = useState("A");
   const [date, setDate] = useState(today());
   const [logs, setLogs] = useState([]);
@@ -306,50 +307,80 @@ export default function WorkoutTab({ who, p, exLoading = false, onExercisesChang
     setSaving(false);
   }
 
-  /* ---------- Edição do plano (Fase 1) ---------- */
-  const BLANK_EX = { name: "", sets: "3", reps: "10–12", rest: "90s", rir: "1 RIR", muscles: "", note: "", priority: false };
+  /* ---------- Edição do plano ---------- */
+  // Prescrição padrão de um novo bloco
+  const BLANK_PRESCRIPTION = { sets: "3", reps: "10–12", rest: "90s", rir: "1 RIR", note: "", priority: false };
 
-  function openAdd() { setEditing({ _mode: "add", ...BLANK_EX }); }
+  // Adicionar: abre o seletor de catálogo + a prescrição do bloco.
+  function openAdd() {
+    setEditing({
+      _mode: "add",
+      catalogId: null, query: "", creatingNew: false,
+      newName: "", newMuscles: "",
+      ...BLANK_PRESCRIPTION,
+    });
+  }
+  // Editar: campos do catálogo (nome/músculos, globais) + prescrição do bloco.
   function openEdit(ex) {
     setEditing({
-      _mode: "edit", id: ex.id,
-      name: ex.name, sets: ex.sets, reps: ex.reps, rest: ex.rest,
-      rir: ex.rir, muscles: ex.muscles, note: ex.note, priority: !!ex.priority,
+      _mode: "edit",
+      placementId: ex.placementId, catalogId: ex.id,
+      name: ex.name, muscles: ex.muscles,
+      sets: ex.sets, reps: ex.reps, rest: ex.rest, rir: ex.rir,
+      note: ex.note, priority: !!ex.priority,
     });
   }
   function closeEditor() { setEditing(null); }
 
   async function saveEx() {
     if (!editing) return;
-    if (!editing.name?.trim()) { setMsg("Dê um nome ao exercício."); return; }
     setSavingEx(true); setMsg("");
     try {
-      const fields = {
-        name: editing.name.trim(), sets: editing.sets, reps: editing.reps,
-        rest: editing.rest, rir: editing.rir, muscles: editing.muscles,
-        note: editing.note, priority: !!editing.priority,
+      const prescription = {
+        sets: editing.sets, reps: editing.reps, rest: editing.rest,
+        rir: editing.rir, note: editing.note, priority: !!editing.priority,
       };
+
       if (editing._mode === "add") {
-        await addPlanExercise({ person: who, dayId: activeDay, fields });
+        // 1) Resolve o exercício do catálogo: existente ou recém-criado.
+        let catalogId = editing.catalogId;
+        if (editing.creatingNew) {
+          if (!editing.newName?.trim()) { setMsg("Dê um nome ao novo exercício."); setSavingEx(false); return; }
+          const created = await addCatalogExercise({ name: editing.newName, muscles: editing.newMuscles });
+          catalogId = created.id;
+        }
+        if (!catalogId) { setMsg("Escolha um exercício ou crie um novo."); setSavingEx(false); return; }
+        // 2) Cria o placement nesse dia.
+        await addPlanExercise({ person: who, dayId: activeDay, exerciseId: catalogId, fields: prescription });
       } else {
-        await updatePlanExercise(editing.id, fields);
+        // Edita o catálogo (nome/músculos — afeta todos os planos) e a prescrição.
+        if (!editing.name?.trim()) { setMsg("O exercício precisa de um nome."); setSavingEx(false); return; }
+        await updateCatalogExercise(editing.catalogId, { name: editing.name, muscles: editing.muscles });
+        await updatePlanExercise(editing.placementId, prescription);
       }
+
       setEditing(null);
       if (onExercisesChanged) await onExercisesChanged();
       setMsg("✅ Plano atualizado.");
-    } catch (e) { setMsg("Erro ao salvar exercício: " + e.message); }
+    } catch (e) {
+      // 23505 = nome de catálogo já existe
+      const friendly = e?.code === "23505"
+        ? "Já existe um exercício com esse nome no catálogo."
+        : e.message;
+      setMsg("Erro ao salvar: " + friendly);
+    }
     setSavingEx(false);
   }
 
   async function removeEx(ex) {
-    if (!ex.id) { setMsg("Este exercício ainda não está no banco — recarregue a página."); return; }
+    if (!ex.placementId) { setMsg("Este exercício ainda não está no banco — recarregue a página."); return; }
     const ok = typeof window !== "undefined"
-      ? window.confirm(`Remover "${ex.name}" do Treino ${activeDay}?\n\nO histórico de cargas é preservado — o exercício só deixa de aparecer no plano.`)
+      ? window.confirm(`Remover "${ex.name}" do Treino ${activeDay}?\n\nO histórico de cargas é preservado — o exercício só deixa de aparecer neste dia.`)
       : true;
     if (!ok) return;
     setMsg("");
     try {
-      await deactivatePlanExercise(ex.id);
+      await deactivatePlanExercise(ex.placementId);
       if (onExercisesChanged) await onExercisesChanged();
       setMsg(`"${ex.name}" removido do plano (histórico preservado).`);
     } catch (e) { setMsg("Erro ao remover: " + e.message); }
@@ -557,6 +588,8 @@ export default function WorkoutTab({ who, p, exLoading = false, onExercisesChang
         <ExerciseEditor
           editing={editing} setEditing={setEditing} p={p}
           dayId={activeDay} saving={savingEx}
+          catalog={catalog}
+          excludeIds={day.exercises.map((e) => e.id)}
           onSave={saveEx} onClose={closeEditor}
         />
       )}
@@ -681,9 +714,18 @@ function SetProgress({ done, total }) {
 }
 
 /* =================== EDITOR DE EXERCÍCIO =================== */
-function ExerciseEditor({ editing, setEditing, p, dayId, saving, onSave, onClose }) {
+function ExerciseEditor({ editing, setEditing, p, dayId, saving, catalog, excludeIds = [], onSave, onClose }) {
   const set = (field, value) => setEditing((e) => ({ ...e, [field]: value }));
   const isAdd = editing._mode === "add";
+
+  // Catálogo filtrado: tira o que já está neste dia + aplica a busca digitada.
+  const exclude = new Set(excludeIds);
+  const q = (editing.query || "").trim().toLowerCase();
+  const options = (catalog || [])
+    .filter((c) => !exclude.has(c.id))
+    .filter((c) => !q || c.name.toLowerCase().includes(q) || (c.muscles || "").toLowerCase().includes(q));
+
+  const selected = (catalog || []).find((c) => c.id === editing.catalogId);
 
   return (
     <div
@@ -702,45 +744,125 @@ function ExerciseEditor({ editing, setEditing, p, dayId, saving, onSave, onClose
         }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
           <span style={{ fontFamily: "'Bebas Neue', sans-serif", fontSize: 22, color: p.accent, letterSpacing: "0.05em" }}>
-            {isAdd ? `NOVO EXERCÍCIO · TREINO ${dayId}` : "EDITAR EXERCÍCIO"}
+            {isAdd ? `ADICIONAR · TREINO ${dayId}` : "EDITAR EXERCÍCIO"}
           </span>
           <button onClick={onClose} style={{ background: "none", border: "none", color: "#888", fontSize: 20, cursor: "pointer" }}>✕</button>
         </div>
 
-        <EditorField label="Nome">
-          <input value={editing.name || ""} onChange={(e) => set("name", e.target.value)} style={fullInput} autoFocus placeholder="Ex.: Agachamento Livre" />
-        </EditorField>
+        {/* ---------- MODO ADICIONAR: escolher do catálogo ou criar ---------- */}
+        {isAdd && !editing.creatingNew && (
+          <>
+            <EditorField label="Exercício">
+              <input
+                value={editing.query || ""}
+                onChange={(e) => set("query", e.target.value)}
+                style={fullInput} autoFocus
+                placeholder="Buscar no catálogo…" />
+            </EditorField>
 
-        <div style={{ display: "flex", gap: 8 }}>
-          <EditorField label="Séries" flex>
-            <input value={editing.sets || ""} onChange={(e) => set("sets", e.target.value)} style={fullInput} placeholder="4" />
-          </EditorField>
-          <EditorField label="Reps" flex>
-            <input value={editing.reps || ""} onChange={(e) => set("reps", e.target.value)} style={fullInput} placeholder="8–10" />
-          </EditorField>
-        </div>
+            <div style={{
+              maxHeight: 200, overflowY: "auto", margin: "0 0 6px",
+              border: "1px solid #2a2a35", borderRadius: 10,
+            }}>
+              {options.length === 0 ? (
+                <div style={{ padding: "14px", fontSize: 12, color: "#666", textAlign: "center" }}>
+                  {q ? "Nenhum exercício encontrado." : "Catálogo vazio."}
+                </div>
+              ) : options.map((c) => {
+                const active = c.id === editing.catalogId;
+                return (
+                  <button key={c.id} onClick={() => set("catalogId", c.id)} style={{
+                    display: "block", width: "100%", textAlign: "left", cursor: "pointer",
+                    padding: "10px 12px", border: "none",
+                    borderBottom: "1px solid rgba(255,255,255,0.05)",
+                    background: active ? p.color + "22" : "transparent",
+                    color: active ? p.accent : "#ddd",
+                  }}>
+                    <div style={{ fontSize: 13, fontWeight: active ? 600 : 400 }}>{c.name}</div>
+                    {c.muscles && <div style={{ fontSize: 10, color: "#777", marginTop: 2 }}>{c.muscles}</div>}
+                  </button>
+                );
+              })}
+            </div>
 
-        <div style={{ display: "flex", gap: 8 }}>
-          <EditorField label="Intervalo" flex>
-            <input value={editing.rest || ""} onChange={(e) => set("rest", e.target.value)} style={fullInput} placeholder="2 min" />
-          </EditorField>
-          <EditorField label="RIR" flex>
-            <input value={editing.rir || ""} onChange={(e) => set("rir", e.target.value)} style={fullInput} placeholder="2 RIR" />
-          </EditorField>
-        </div>
+            <button onClick={() => set("creatingNew", true)} style={{
+              background: "none", border: "none", color: p.accent, cursor: "pointer",
+              fontSize: 12, padding: "4px 0 14px",
+            }}>＋ Criar exercício novo no catálogo</button>
+          </>
+        )}
 
-        <EditorField label="Músculos">
-          <input value={editing.muscles || ""} onChange={(e) => set("muscles", e.target.value)} style={fullInput} placeholder="Quadríceps, Glúteos" />
-        </EditorField>
+        {/* ---------- MODO ADICIONAR: criar novo no catálogo ---------- */}
+        {isAdd && editing.creatingNew && (
+          <>
+            <div style={{ fontSize: 10, color: "#777", marginBottom: 10, lineHeight: 1.5 }}>
+              Novo exercício no catálogo — fica disponível para os dois perfis.
+            </div>
+            <EditorField label="Nome">
+              <input value={editing.newName || ""} onChange={(e) => set("newName", e.target.value)} style={fullInput} autoFocus placeholder="Ex.: Agachamento Livre" />
+            </EditorField>
+            <EditorField label="Músculos">
+              <input value={editing.newMuscles || ""} onChange={(e) => set("newMuscles", e.target.value)} style={fullInput} placeholder="Quadríceps, Glúteos" />
+            </EditorField>
+            <button onClick={() => set("creatingNew", false)} style={{
+              background: "none", border: "none", color: "#888", cursor: "pointer",
+              fontSize: 12, padding: "0 0 14px",
+            }}>← Escolher do catálogo existente</button>
+          </>
+        )}
 
-        <EditorField label="Dica (opcional)">
-          <textarea value={editing.note || ""} onChange={(e) => set("note", e.target.value)} style={{ ...fullInput, minHeight: 60, resize: "vertical" }} placeholder="Foco em amplitude…" />
-        </EditorField>
+        {/* ---------- MODO EDITAR: campos do catálogo (globais) ---------- */}
+        {!isAdd && (
+          <>
+            <div style={{ fontSize: 10, color: "#777", marginBottom: 4, textTransform: "uppercase", letterSpacing: "0.06em" }}>
+              Catálogo · afeta todos os planos
+            </div>
+            <EditorField label="Nome">
+              <input value={editing.name || ""} onChange={(e) => set("name", e.target.value)} style={fullInput} placeholder="Ex.: Agachamento Livre" />
+            </EditorField>
+            <EditorField label="Músculos">
+              <input value={editing.muscles || ""} onChange={(e) => set("muscles", e.target.value)} style={fullInput} placeholder="Quadríceps, Glúteos" />
+            </EditorField>
+            <div style={{ height: 1, background: "#2a2a35", margin: "6px 0 16px" }} />
+          </>
+        )}
 
-        <label style={{ display: "flex", alignItems: "center", gap: 8, margin: "4px 0 18px", cursor: "pointer", fontSize: 13, color: "#bbb" }}>
-          <input type="checkbox" checked={!!editing.priority} onChange={(e) => set("priority", e.target.checked)} style={{ width: 16, height: 16, accentColor: p.color }} />
-          Marcar como prioridade
-        </label>
+        {/* ---------- Prescrição do bloco (sempre) ---------- */}
+        {(!isAdd || editing.catalogId || editing.creatingNew) && (
+          <>
+            <div style={{ fontSize: 10, color: "#777", marginBottom: 8, textTransform: "uppercase", letterSpacing: "0.06em" }}>
+              Prescrição neste dia
+              {isAdd && selected && <span style={{ color: p.accent, textTransform: "none", letterSpacing: 0 }}> · {selected.name}</span>}
+            </div>
+
+            <div style={{ display: "flex", gap: 8 }}>
+              <EditorField label="Séries" flex>
+                <input value={editing.sets || ""} onChange={(e) => set("sets", e.target.value)} style={fullInput} placeholder="4" />
+              </EditorField>
+              <EditorField label="Reps" flex>
+                <input value={editing.reps || ""} onChange={(e) => set("reps", e.target.value)} style={fullInput} placeholder="8–10" />
+              </EditorField>
+            </div>
+
+            <div style={{ display: "flex", gap: 8 }}>
+              <EditorField label="Intervalo" flex>
+                <input value={editing.rest || ""} onChange={(e) => set("rest", e.target.value)} style={fullInput} placeholder="2 min" />
+              </EditorField>
+              <EditorField label="RIR" flex>
+                <input value={editing.rir || ""} onChange={(e) => set("rir", e.target.value)} style={fullInput} placeholder="2 RIR" />
+              </EditorField>
+            </div>
+
+            <EditorField label="Dica deste bloco (opcional)">
+              <textarea value={editing.note || ""} onChange={(e) => set("note", e.target.value)} style={{ ...fullInput, minHeight: 56, resize: "vertical" }} placeholder="Pausa de 1s no topo…" />
+            </EditorField>
+
+            <label style={{ display: "flex", alignItems: "center", gap: 8, margin: "4px 0 18px", cursor: "pointer", fontSize: 13, color: "#bbb" }}>
+              <input type="checkbox" checked={!!editing.priority} onChange={(e) => set("priority", e.target.checked)} style={{ width: 16, height: 16, accentColor: p.color }} />
+              Marcar como prioridade
+            </label>
+          </>
+        )}
 
         <div style={{ display: "flex", gap: 8 }}>
           <button onClick={onClose} style={{ flex: 1, padding: "12px", background: "rgba(255,255,255,0.05)", border: "1px solid #2a2a35", borderRadius: 10, color: "#bbb", fontSize: 14, cursor: "pointer" }}>
@@ -753,7 +875,7 @@ function ExerciseEditor({ editing, setEditing, p, dayId, saving, onSave, onClose
 
         {!isAdd && (
           <p style={{ fontSize: 10, color: "#555", marginTop: 14, lineHeight: 1.6 }}>
-            Renomear é seguro: o histórico de cargas continua ligado a este exercício.
+            Renomear é seguro: o histórico de cargas continua ligado a este exercício, aqui e em qualquer outro plano que o use.
           </p>
         )}
       </div>

@@ -71,17 +71,67 @@ export function bestSet(logs) {
   return best;
 }
 
-/* ---------------- PLAN EXERCISES (editáveis pela UI) ---------------- */
-// Os exercícios do plano vivem na tabela plan_exercises. Cada um tem um id
-// estável; os logs referenciam esse id. Renomear NÃO quebra o histórico.
+/* ---------------- EXERCISES (catálogo reutilizável) ---------------- */
+// O catálogo é a definição do movimento: nome, músculos e (futuro) mídia,
+// instruções, dicas. É compartilhado entre os perfis. Os logs se ligam
+// ao id do catálogo — o PR é do movimento, não do lugar no plano.
 
-const EX_FIELDS = ["name", "sets", "reps", "rest", "rir", "muscles", "note", "priority"];
+const CATALOG_FIELDS = ["name", "muscles", "media_url", "instructions", "tips", "equipment"];
 
-// Lê os exercícios ativos de um perfil, agrupados por dia (A/B/C), já ordenados.
+// Lista o catálogo inteiro, em ordem alfabética.
+export async function getCatalog() {
+  const { data, error } = await supabase
+    .from("exercises")
+    .select("*")
+    .order("name", { ascending: true });
+  if (error) throw error;
+  return data || [];
+}
+
+// Cria um exercício no catálogo. Se já existir um com o mesmo nome,
+// devolve o existente (o nome é único — evita duplicar o movimento).
+export async function addCatalogExercise({ name, muscles }) {
+  const trimmed = (name || "").trim();
+  if (!trimmed) throw new Error("O exercício precisa de um nome.");
+
+  const { data: found, error: selErr } = await supabase
+    .from("exercises").select("*").eq("name", trimmed).limit(1);
+  if (selErr) throw selErr;
+  if (found && found[0]) return found[0];
+
+  const { data, error } = await supabase
+    .from("exercises")
+    .insert({ name: trimmed, muscles: muscles || null })
+    .select()
+    .single();
+  if (error) throw error;
+  return data;
+}
+
+// Atualiza um item do catálogo (afeta TODOS os planos que o usam).
+export async function updateCatalogExercise(id, patch) {
+  const clean = {};
+  for (const f of CATALOG_FIELDS) if (f in patch) clean[f] = patch[f];
+  if (clean.name != null) clean.name = String(clean.name).trim();
+  clean.updated_at = new Date().toISOString();
+  const { data, error } = await supabase
+    .from("exercises").update(clean).eq("id", id).select().single();
+  if (error) throw error;
+  return data;
+}
+
+/* ---------------- PLAN EXERCISES (placements) ---------------- */
+// Um placement diz ONDE um exercício do catálogo entra no plano de alguém
+// (perfil, dia, posição) e com qual PRESCRIÇÃO (séries, reps, descanso,
+// RIR, prioridade, nota). O nome/músculos vêm do catálogo via join.
+
+const PLACEMENT_FIELDS = ["sets", "reps", "rest", "rir", "note", "priority"];
+
+// Lê os placements ativos de um perfil, já com o item de catálogo embutido.
 export async function getPlanExercises(person) {
   const { data, error } = await supabase
     .from("plan_exercises")
-    .select("*")
+    .select("id, person, day_id, position, sets, reps, rest, rir, note, priority, active, exercise_id, exercises ( id, name, muscles, media_url, instructions, tips, equipment )")
     .eq("person", person)
     .eq("active", true)
     .order("day_id", { ascending: true })
@@ -90,72 +140,20 @@ export async function getPlanExercises(person) {
   return data || [];
 }
 
-// Semeia a tabela a partir do plans.js na primeira vez (ou se ficar vazia).
-// Lê o plano em memória e insere; é seguro chamar sempre — só age se vazio.
-// Guard contra corrida: se a sessão re-disparar o carregamento várias vezes,
-// chamadas concorrentes para o MESMO perfil compartilham a mesma execução,
-// evitando inserir o conjunto de exercícios mais de uma vez.
-const _seedInFlight = {};
-export async function seedPlanExercisesIfEmpty(person, daysFromPlan) {
-  if (_seedInFlight[person]) return _seedInFlight[person];
-
-  const run = (async () => {
-    const { count, error: cErr } = await supabase
-      .from("plan_exercises")
-      .select("id", { count: "exact", head: true })
-      .eq("person", person);
-    if (cErr) throw cErr;
-    if ((count || 0) > 0) return false; // já populado → não faz nada
-
-    const toInsert = [];
-    for (const day of daysFromPlan || []) {
-      (day.exercises || []).forEach((ex, idx) => {
-        toInsert.push({
-          person,
-          day_id: day.id,
-          position: idx,
-          name: ex.name,
-          sets: ex.sets ?? null,
-          reps: ex.reps ?? null,
-          rest: ex.rest ?? null,
-          rir: ex.rir ?? null,
-          muscles: ex.muscles ?? null,
-          note: ex.note ?? null,
-          priority: !!ex.priority,
-          active: true,
-        });
-      });
-    }
-    if (toInsert.length === 0) return false;
-
-    const { error } = await supabase.from("plan_exercises").insert(toInsert);
-    // 23505 = unique_violation: outra carga/aba já semeou. Tudo certo, ignora.
-    if (error && error.code !== "23505") throw error;
-    return true;
-  })();
-
-  _seedInFlight[person] = run;
-  try { return await run; }
-  finally { delete _seedInFlight[person]; }
-}
-
-// Atualiza campos de um exercício. Aceita só os campos editáveis.
+// Atualiza a prescrição de um placement (campos do bloco, não do catálogo).
 export async function updatePlanExercise(id, patch) {
   const clean = {};
-  for (const f of EX_FIELDS) if (f in patch) clean[f] = patch[f];
+  for (const f of PLACEMENT_FIELDS) if (f in patch) clean[f] = patch[f];
   clean.updated_at = new Date().toISOString();
   const { data, error } = await supabase
-    .from("plan_exercises")
-    .update(clean)
-    .eq("id", id)
-    .select()
-    .single();
+    .from("plan_exercises").update(clean).eq("id", id).select().single();
   if (error) throw error;
   return data;
 }
 
-// Adiciona um exercício ao fim de um dia (position = nº de exercícios ativos do dia).
-export async function addPlanExercise({ person, dayId, fields }) {
+// Adiciona um exercício do catálogo a um dia (no fim da lista).
+export async function addPlanExercise({ person, dayId, exerciseId, fields }) {
+  if (!exerciseId) throw new Error("Escolha um exercício do catálogo.");
   const { count, error: cErr } = await supabase
     .from("plan_exercises")
     .select("id", { count: "exact", head: true })
@@ -164,15 +162,11 @@ export async function addPlanExercise({ person, dayId, fields }) {
     .eq("active", true);
   if (cErr) throw cErr;
 
-  const row = { person, day_id: dayId, position: count || 0, active: true, priority: false };
-  for (const f of EX_FIELDS) if (fields && f in fields) row[f] = fields[f];
-  if (!row.name) throw new Error("O exercício precisa de um nome.");
+  const row = { person, day_id: dayId, exercise_id: exerciseId, position: count || 0, active: true, priority: false };
+  for (const f of PLACEMENT_FIELDS) if (fields && f in fields) row[f] = fields[f];
 
   const { data, error } = await supabase
-    .from("plan_exercises")
-    .insert(row)
-    .select()
-    .single();
+    .from("plan_exercises").insert(row).select().single();
   if (error) throw error;
   return data;
 }

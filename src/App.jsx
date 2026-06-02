@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from "react";
 import { supabase, isConfigured } from "./lib/supabase";
 import { profiles } from "./data/plans";
-import { getPlanExercises, seedPlanExercisesIfEmpty } from "./lib/db";
+import { getPlanExercises, getCatalog } from "./lib/db";
 import Auth from "./components/Auth";
 import WorkoutTab from "./components/WorkoutTab";
 import AnalysisTab from "./components/AnalysisTab";
@@ -14,8 +14,10 @@ export default function App() {
   const [who, setWho] = useState("isa");
   const [activeTab, setActiveTab] = useState("treinos");
 
-  // Exercícios carregados do banco, por perfil: { isa: [...linhas], luca: [...] }
+  // Exercícios carregados do banco, por perfil: { isa: [...placements], luca: [...] }
   const [exercisesByPerson, setExercisesByPerson] = useState({});
+  // Catálogo de exercícios (compartilhado) — alimenta o dropdown de seleção.
+  const [catalog, setCatalog] = useState([]);
   const [exLoading, setExLoading] = useState(true);
   const [exError, setExError] = useState("");
 
@@ -29,29 +31,38 @@ export default function App() {
     return () => listener.subscription.unsubscribe();
   }, []);
 
-  // Carrega (e semeia, se preciso) os exercícios de um perfil a partir do banco.
+  // Carrega os placements (exercícios do plano) de um perfil.
   const loadExercises = useCallback(async (person) => {
-    // Na primeira vez popula a tabela a partir do plano em código (plans.js).
-    await seedPlanExercisesIfEmpty(person, profiles[person]?.days || []);
     const rows = await getPlanExercises(person);
     setExercisesByPerson((m) => ({ ...m, [person]: rows }));
     return rows;
   }, []);
 
-  // Recarrega só um perfil — chamado pelas abas após uma edição.
-  const refreshExercises = useCallback(async (person) => {
-    try { await loadExercises(person); }
-    catch (e) { setExError("Erro ao recarregar exercícios: " + e.message); }
-  }, [loadExercises]);
+  // Recarrega o catálogo (após criar/editar um item).
+  const loadCatalog = useCallback(async () => {
+    const rows = await getCatalog();
+    setCatalog(rows);
+    return rows;
+  }, []);
 
-  // Quando logar, carrega os exercícios dos dois perfis uma vez.
+  // Recarrega após uma edição: o perfil afetado + o catálogo (nome/músculos
+  // podem ter mudado e isso reflete em todos os planos).
+  const refreshExercises = useCallback(async (person) => {
+    try { await Promise.all([loadExercises(person), loadCatalog()]); }
+    catch (e) { setExError("Erro ao recarregar exercícios: " + e.message); }
+  }, [loadExercises, loadCatalog]);
+
+  // Quando logar, carrega catálogo + exercícios dos dois perfis uma vez.
   useEffect(() => {
     if (!session) return;
     let alive = true;
     (async () => {
       setExLoading(true); setExError("");
       try {
-        await Promise.all(Object.keys(profiles).map((person) => loadExercises(person)));
+        await Promise.all([
+          loadCatalog(),
+          ...Object.keys(profiles).map((person) => loadExercises(person)),
+        ]);
       } catch (e) {
         if (alive) setExError("Erro ao carregar exercícios: " + e.message);
       } finally {
@@ -59,7 +70,7 @@ export default function App() {
       }
     })();
     return () => { alive = false; };
-  }, [session, loadExercises]);
+  }, [session, loadExercises, loadCatalog]);
 
   if (!authReady) {
     return <div style={{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", color: "#555" }}>Carregando…</div>;
@@ -127,7 +138,7 @@ export default function App() {
         {/* WorkoutTab fica SEMPRE montado (só escondido) para não perder o progresso/valores
             ao trocar de aba. O estado vive na sessão e some apenas ao recarregar a página. */}
         <div style={{ display: activeTab === "treinos" ? "block" : "none" }}>
-          <WorkoutTab who={who} p={p} exLoading={exLoading} onExercisesChanged={() => refreshExercises(who)} />
+          <WorkoutTab who={who} p={p} catalog={catalog} exLoading={exLoading} onExercisesChanged={() => refreshExercises(who)} />
         </div>
         {activeTab === "evolucao" && <ProgressTab who={who} p={p} />}
         {activeTab === "analise" && <AnalysisTab who={who} p={p} />}
@@ -137,9 +148,10 @@ export default function App() {
   );
 }
 
-/* Monta a lista de dias (A/B/C) a partir das linhas do banco, preservando o
-   theme/ordem definidos no plano em código. Se ainda não houver dados do banco,
-   usa o próprio plano como fallback — assim o app nunca aparece vazio. */
+/* Monta a lista de dias (A/B/C) a partir dos placements do banco, preservando
+   o theme/ordem definidos no plano em código. Cada exercício traz o id do
+   CATÁLOGO (vínculo com os logs) e o placementId (para editar/remover o bloco).
+   Se ainda não houver dados do banco, usa o plano em código como fallback. */
 function buildDays(baseProfile, dbRows) {
   const planDays = baseProfile?.days || [];
   if (!dbRows) return planDays; // ainda carregando → fallback no plano em código
@@ -147,7 +159,6 @@ function buildDays(baseProfile, dbRows) {
   const byDay = {};
   for (const r of dbRows) (byDay[r.day_id] ||= []).push(r);
 
-  // Mantém a ordem/tema dos dias do plano; inclui dias novos que só existam no banco.
   const planIds = planDays.map((d) => d.id);
   const extraIds = Object.keys(byDay).filter((id) => !planIds.includes(id)).sort();
   const order = [...planIds, ...extraIds];
@@ -158,17 +169,24 @@ function buildDays(baseProfile, dbRows) {
     return {
       id,
       theme: planDay?.theme || "",
-      exercises: rows.map((r) => ({
-        id: r.id,            // 👈 id estável do exercício (vínculo com os logs)
-        name: r.name,
-        sets: r.sets || "",
-        reps: r.reps || "",
-        rest: r.rest || "",
-        rir: r.rir || "",
-        muscles: r.muscles || "",
-        note: r.note || "",
-        priority: !!r.priority,
-      })),
+      exercises: rows.map((r) => {
+        const cat = r.exercises || {};        // item de catálogo embutido
+        return {
+          id: cat.id || r.exercise_id,        // 👈 id do CATÁLOGO (vínculo com os logs)
+          placementId: r.id,                  // 👈 id do placement (editar/remover o bloco)
+          name: cat.name || "(sem nome)",
+          muscles: cat.muscles || "",
+          mediaUrl: cat.media_url || "",
+          instructions: cat.instructions || "",
+          tips: cat.tips || "",
+          sets: r.sets || "",
+          reps: r.reps || "",
+          rest: r.rest || "",
+          rir: r.rir || "",
+          note: r.note || "",
+          priority: !!r.priority,
+        };
+      }),
     };
   }).filter((d) => d.exercises.length > 0 || planDays.some((pd) => pd.id === d.id));
 }
