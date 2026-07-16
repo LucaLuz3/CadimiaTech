@@ -287,13 +287,49 @@ export default function WorkoutTab({ who, p, catalog = [], exLoading = false, on
 
   // Valores de partida de um exercício, vindos do último treino salvo (Supabase).
   // É o que deixa os campos já preenchidos "para a próxima vez".
+  // O nº de linhas é o maior entre a prescrição e o que foi realmente logado da
+  // última vez — assim as séries de aquecimento que você registrou reaparecem.
   function baseRows(ex) {
-    const n = setCount(ex.sets);
     const last = logsFor(ex)[0];
+    const n = Math.max(setCount(ex.sets), last?.sets?.length || 0);
     return Array.from({ length: n }, (_, idx) => ({
       weight: last?.sets?.[idx]?.weight != null ? String(last.sets[idx].weight) : "",
       reps: last?.sets?.[idx]?.reps != null ? String(last.sets[idx].reps) : "",
+      warmup: last?.sets?.[idx]?.warmup === true,
     }));
+  }
+
+  // Marca/desmarca uma série como aquecimento. Aquecimento é logado igual, mas
+  // não conta como volume (view v_weekly_volume_performed) nem como PR (bestSet).
+  function toggleWarmup(exName, idx) {
+    patchDraft(key, (dd) => {
+      const ex = day.exercises.find((e) => e.name === exName);
+      const rows = dd[exName] ? [...dd[exName]] : baseRows(ex);
+      rows[idx] = { ...rows[idx], warmup: !rows[idx].warmup };
+      return { ...dd, [exName]: rows };
+    });
+  }
+
+  // Séries de aquecimento são EXTRAS: entram além da prescrição, não no lugar
+  // dela. Por isso dá para adicionar/remover linhas.
+  function addRow(exName, warmup) {
+    patchDraft(key, (dd) => {
+      const ex = day.exercises.find((e) => e.name === exName);
+      const rows = dd[exName] ? [...dd[exName]] : baseRows(ex);
+      const row = { weight: "", reps: "", warmup: !!warmup };
+      if (warmup) rows.unshift(row); else rows.push(row);
+      return { ...dd, [exName]: rows };
+    });
+  }
+
+  function removeRow(exName, idx) {
+    patchDraft(key, (dd) => {
+      const ex = day.exercises.find((e) => e.name === exName);
+      const rows = dd[exName] ? [...dd[exName]] : baseRows(ex);
+      if (rows.length <= 1) return dd;
+      rows.splice(idx, 1);
+      return { ...dd, [exName]: rows };
+    });
   }
 
   function setCell(exName, idx, field, value) {
@@ -316,7 +352,7 @@ export default function WorkoutTab({ who, p, catalog = [], exLoading = false, on
         if (!edited && !done) continue;                        // exercício não realizado hoje → não grava
         const rowsToSave = (draft[ex.name] || baseRows(ex)).filter((r) => r.weight !== "" || r.reps !== "");
         if (rowsToSave.length === 0) continue;
-        const sets = rowsToSave.map((r) => ({ weight: Number(r.weight) || 0, reps: Number(r.reps) || 0 }));
+        const sets = rowsToSave.map((r) => ({ weight: Number(r.weight) || 0, reps: Number(r.reps) || 0, warmup: !!r.warmup }));
         // saveWorkoutLog faz upsert pelo id estável do exercício (cai no nome se não houver id)
         await saveWorkoutLog({ person: who, dayId: activeDay, exerciseId: ex.id, exerciseName: ex.name, date, sets });
         count++;
@@ -605,7 +641,7 @@ export default function WorkoutTab({ who, p, catalog = [], exLoading = false, on
               {(pr || last) && (
                 <div style={{ display: "flex", gap: 14, margin: "10px 0 6px 32px", fontSize: 10, fontFamily: "'DM Mono', monospace", flexWrap: "wrap" }}>
                   {pr && <span style={{ color: p.accent }}>🏆 PR: {pr.weight}kg × {pr.reps}</span>}
-                  {last && <span style={{ color: "#666" }}>último ({fmtShort(last.date)}): {(last.sets || []).map((s) => `${s.weight}×${s.reps}`).join(", ")}</span>}
+                  {last && <span style={{ color: "#666" }}>último ({fmtShort(last.date)}): {(last.sets || []).map((s) => `${s.weight}×${s.reps}${s.warmup ? " (aq)" : ""}`).join(", ")}</span>}
                 </div>
               )}
 
@@ -615,8 +651,9 @@ export default function WorkoutTab({ who, p, catalog = [], exLoading = false, on
                 <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
                   {rows.map((r, idx) => {
                     const isDone = idx < doneSets;
+                    const isW = !!r.warmup;
                     return (
-                      <div key={idx} style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                      <div key={idx} style={{ display: "flex", alignItems: "center", gap: 8, opacity: isW ? 0.62 : 1 }}>
                         <button
                           onClick={() => toggleSet(ex.name, idx, rows.length)}
                           title={isDone ? "Marcar série como NÃO feita" : "Marcar série como feita"}
@@ -635,9 +672,31 @@ export default function WorkoutTab({ who, p, catalog = [], exLoading = false, on
                         <input type="number" inputMode="numeric" placeholder="reps"
                           value={r.reps}
                           onChange={(e) => setCell(ex.name, idx, "reps", e.target.value)} style={miniInput} />
+                        <button
+                          onClick={() => toggleWarmup(ex.name, idx)}
+                          title={isW ? "É aquecimento — não conta como volume nem PR. Clique para virar série de trabalho." : "Marcar como aquecimento"}
+                          style={{
+                            width: 22, height: 20, borderRadius: 5, flexShrink: 0, cursor: "pointer", padding: 0,
+                            border: `1px solid ${isW ? "#ffc46b" : "#2f2f38"}`,
+                            background: isW ? "#ffc46b1f" : "transparent",
+                            color: isW ? "#ffc46b" : "#4a4a55", fontSize: 9,
+                            fontFamily: "'DM Mono', monospace",
+                          }}>W</button>
+                        <button
+                          onClick={() => removeRow(ex.name, idx)}
+                          title="Remover esta linha"
+                          style={{
+                            width: 20, height: 20, borderRadius: 5, flexShrink: 0, cursor: "pointer", padding: 0,
+                            border: "1px solid transparent", background: "transparent",
+                            color: "#3f3f48", fontSize: 12, lineHeight: 1,
+                          }}>×</button>
                       </div>
                     );
                   })}
+                </div>
+                <div style={{ display: "flex", gap: 8, marginTop: 6 }}>
+                  <button onClick={() => addRow(ex.name, true)} style={addRowBtn("#ffc46b")}>＋ aquecimento</button>
+                  <button onClick={() => addRow(ex.name, false)} style={addRowBtn("#555")}>＋ série</button>
                 </div>
               </div>
             </div>
@@ -1019,6 +1078,11 @@ const miniInput = {
   padding: "8px 10px", color: "#f0eee8", fontSize: 13, width: 72, textAlign: "center",
   fontFamily: "'DM Mono', monospace",
 };
+const addRowBtn = (color) => ({
+  background: "transparent", border: `1px dashed ${color}55`, borderRadius: 6,
+  padding: "4px 9px", color, fontSize: 10, cursor: "pointer",
+  fontFamily: "'DM Mono', monospace",
+});
 const saveBtn = (p) => ({
   width: "100%", background: `linear-gradient(135deg, ${p.color}, ${p.accent})`, border: "none",
   borderRadius: 12, padding: "14px", color: "#0d0d12", fontWeight: 600, fontSize: 14,

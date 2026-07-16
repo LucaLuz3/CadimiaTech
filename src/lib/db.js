@@ -60,10 +60,12 @@ export async function deleteWorkoutLog(id) {
 }
 
 // Melhor série histórica (maior carga) por exercício — usado para PRs.
+// Aquecimento nunca é PR: séries com warmup:true ficam de fora.
 export function bestSet(logs) {
   let best = null;
   for (const log of logs) {
     for (const s of log.sets || []) {
+      if (s.warmup) continue;
       const w = Number(s.weight) || 0;
       if (!best || w > best.weight) best = { weight: w, reps: Number(s.reps) || 0, date: log.date };
     }
@@ -140,10 +142,19 @@ export async function getPlanExercises(person) {
   return data || [];
 }
 
+// Converte a prescrição textual de séries no número que as views somam.
+// Pega o PRIMEIRO grupo de dígitos: "4" → 4, "3-4" → 3, "4 séries" → 4.
+// Precisa casar exatamente com o substring(sets from '\d+') da migração 003.
+function setsToNumber(v) {
+  const m = String(v ?? "").match(/\d+/);
+  return m ? Number(m[0]) : null;
+}
+
 // Atualiza a prescrição de um placement (campos do bloco, não do catálogo).
 export async function updatePlanExercise(id, patch) {
   const clean = {};
   for (const f of PLACEMENT_FIELDS) if (f in patch) clean[f] = patch[f];
+  if ("sets" in clean) clean.sets_n = setsToNumber(clean.sets);
   clean.updated_at = new Date().toISOString();
   const { data, error } = await supabase
     .from("plan_exercises").update(clean).eq("id", id).select().single();
@@ -164,6 +175,7 @@ export async function addPlanExercise({ person, dayId, exerciseId, fields }) {
 
   const row = { person, day_id: dayId, exercise_id: exerciseId, position: count || 0, active: true, priority: false };
   for (const f of PLACEMENT_FIELDS) if (fields && f in fields) row[f] = fields[f];
+  row.sets_n = setsToNumber(row.sets);
 
   const { data, error } = await supabase
     .from("plan_exercises").insert(row).select().single();
@@ -208,6 +220,156 @@ export async function deactivatePlanExercise(id) {
     .update({ active: false, updated_at: new Date().toISOString() })
     .eq("id", id);
   if (error) throw error;
+}
+
+/* ---------------- VOLUME POR GRUPO MUSCULAR ---------------- */
+// O cálculo mora no Postgres (views v_weekly_volume_*), não aqui: a regra
+// precisa ser a mesma para os dois perfis e não faz sentido duplicá-la em JS.
+// Estas funções só leem e montam a série de semanas.
+
+// Segunda-feira da semana de `d`, em ISO (YYYY-MM-DD).
+// Precisa casar com o date_trunc('week', ...) do Postgres, que começa na segunda.
+export function weekStartISO(d = new Date()) {
+  const x = new Date(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()));
+  const dow = (x.getUTCDay() + 6) % 7; // 0 = segunda
+  x.setUTCDate(x.getUTCDate() - dow);
+  return x.toISOString().slice(0, 10);
+}
+
+export function addWeeksISO(iso, n) {
+  const d = new Date(iso + "T00:00:00Z");
+  d.setUTCDate(d.getUTCDate() + n * 7);
+  return d.toISOString().slice(0, 10);
+}
+
+export async function getMuscleGroups() {
+  const { data, error } = await supabase
+    .from("muscle_groups").select("*").order("sort_order", { ascending: true });
+  if (error) throw error;
+  return data || [];
+}
+
+export async function getVolumeTargets(person) {
+  const { data, error } = await supabase
+    .from("volume_targets").select("*").eq("person", person);
+  if (error) throw error;
+  return data || [];
+}
+
+export async function upsertVolumeTarget({ person, muscleSlug, minSets, maxSets, priority, note }) {
+  const { data, error } = await supabase
+    .from("volume_targets")
+    .upsert({
+      person,
+      muscle_slug: muscleSlug,
+      min_sets: Number(minSets) || 0,
+      max_sets: Number(maxSets) || 0,
+      priority: !!priority,
+      note: note || null,
+      updated_at: new Date().toISOString(),
+    }, { onConflict: "person,muscle_slug" })
+    .select()
+    .single();
+  if (error) throw error;
+  return data;
+}
+
+export async function getPlannedVolume(person) {
+  const { data, error } = await supabase
+    .from("v_weekly_volume_planned").select("*").eq("person", person);
+  if (error) throw error;
+  return data || [];
+}
+
+// Volume realizado das últimas `weeks` semanas (inclui a atual).
+export async function getPerformedVolume(person, weeks = 5) {
+  const from = addWeeksISO(weekStartISO(), -(weeks - 1));
+  const { data, error } = await supabase
+    .from("v_weekly_volume_performed")
+    .select("*")
+    .eq("person", person)
+    .gte("week_start", from);
+  if (error) throw error;
+  return data || [];
+}
+
+export async function getUnmappedExercises(person) {
+  const { data, error } = await supabase
+    .from("v_unmapped_exercises").select("*").eq("person", person);
+  if (error) throw error;
+  return data || [];
+}
+
+export async function getExerciseMuscles(exerciseId) {
+  const { data, error } = await supabase
+    .from("exercise_muscles").select("*").eq("exercise_id", exerciseId);
+  if (error) throw error;
+  return data || [];
+}
+
+// Substitui o conjunto de vínculos de um exercício (delete + insert).
+// links = [{ muscleSlug, role, contribution }]
+export async function setExerciseMuscles(exerciseId, links) {
+  if (!exerciseId) throw new Error("Exercício inválido.");
+  const { error: delErr } = await supabase
+    .from("exercise_muscles").delete().eq("exercise_id", exerciseId);
+  if (delErr) throw delErr;
+
+  const rows = (links || [])
+    .filter((l) => l && l.muscleSlug)
+    .map((l) => ({
+      exercise_id: exerciseId,
+      muscle_slug: l.muscleSlug,
+      role: l.role === "secondary" ? "secondary" : "primary",
+      contribution: Math.min(1, Math.max(0, Number(l.contribution ?? (l.role === "secondary" ? 0.5 : 1)))),
+    }));
+  if (rows.length === 0) return [];
+
+  const { data, error } = await supabase.from("exercise_muscles").insert(rows).select();
+  if (error) throw error;
+  return data || [];
+}
+
+// Monta a linha por músculo consumida pela aba Análise:
+// semana atual (parcial) + média das 4 anteriores + planejado + meta.
+export async function getVolumeAnalysis(person) {
+  const [groups, targets, planned, performed, unmapped] = await Promise.all([
+    getMuscleGroups(),
+    getVolumeTargets(person),
+    getPlannedVolume(person),
+    getPerformedVolume(person, 5),
+    getUnmappedExercises(person),
+  ]);
+
+  const current = weekStartISO();
+  const prior4 = [1, 2, 3, 4].map((n) => addWeeksISO(current, -n));
+
+  const at = (slug, week) => {
+    const r = performed.find((x) => x.muscle_slug === slug && x.week_start === week);
+    return r ? Number(r.sets) : 0;
+  };
+
+  const rows = groups.map((g) => {
+    const t = targets.find((x) => x.muscle_slug === g.slug);
+    const pl = planned.find((x) => x.muscle_slug === g.slug);
+    // Semana sem registro conta como zero — treino não feito É volume zero,
+    // então a média divide sempre por 4, não pelo nº de semanas com dado.
+    const avg4 = prior4.reduce((s, w) => s + at(g.slug, w), 0) / 4;
+    return {
+      slug: g.slug,
+      label: g.label_pt,
+      region: g.region,
+      min: t ? Number(t.min_sets) : 0,
+      max: t ? Number(t.max_sets) : 0,
+      priority: t ? !!t.priority : false,
+      note: t ? t.note : null,
+      planned: pl ? Number(pl.sets) : 0,
+      currentWeek: at(g.slug, current),
+      avg4,
+    };
+  });
+
+  return { rows, unmapped, currentWeek: current };
 }
 
 /* ---------------- BODY WEIGHT ---------------- */

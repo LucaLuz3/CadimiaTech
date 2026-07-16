@@ -103,30 +103,10 @@ export const profiles = {
   },
 };
 
-// Volume semanal por grupo muscular (aba Análise)
-export const volumeData = {
-  isa: [
-    { m: "Bíceps", v: 13, max: 18, priority: true },
-    { m: "Tríceps", v: 13, max: 18, priority: true },
-    { m: "Inferiores (Quadríceps)", v: 14, max: 18, priority: true },
-    { m: "Glúteos / Posterior", v: 14, max: 18, priority: true },
-    { m: "Core / Abdômen", v: 9, max: 18, priority: true },
-    { m: "Dorsais", v: 9, max: 18, priority: false },
-    { m: "Peitoral", v: 9, max: 18, priority: false },
-    { m: "Ombros", v: 6, max: 18, priority: false, note: "Manutenção (já desenvolvido)" },
-  ],
-  luca: [
-    { m: "Peitoral", v: 14, max: 18, priority: true },
-    { m: "Ombros (3 porções)", v: 16, max: 18, priority: true },
-    { m: "Glúteos", v: 12, max: 18, priority: true },
-    { m: "Bíceps", v: 13, max: 18, priority: true },
-    { m: "Core / Abdômen", v: 10, max: 18, priority: true },
-    { m: "Dorsais", v: 9, max: 18, priority: false },
-    { m: "Posterior de Coxa", v: 8, max: 18, priority: false },
-    { m: "Quadríceps", v: 7, max: 18, priority: false, note: "Manutenção (já forte)" },
-    { m: "Panturrilha", v: 0, max: 18, priority: false, note: "Removido (já forte — não sobrecarregar)" },
-  ],
-};
+// NOTA: `volumeData` foi removido daqui. O volume semanal por grupo muscular
+// agora é COMPUTADO a partir dos logs e do plano (views v_weekly_volume_* no
+// Supabase, migração 003_volume.sql) e lido via getVolumeAnalysis() no db.js.
+// As metas por músculo vivem na tabela volume_targets, não neste arquivo.
 
 // Cards de nutrição (aba Nutrição)
 export const nutritionData = {
