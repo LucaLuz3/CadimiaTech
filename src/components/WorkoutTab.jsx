@@ -229,12 +229,23 @@ export default function WorkoutTab({ who, p, catalog = [], exLoading = false, on
       return cur >= max ? cc : { ...cc, [exName]: cur + 1 };
     });
   }
-  // Ajuste manual ao tocar no indicador de uma série (progresso é sequencial).
-  function toggleSet(exName, idx, total) {
+  // Ajuste manual ao tocar no indicador de uma série de trabalho (progresso é
+  // sequencial). `workIdx` é a posição entre as séries de TRABALHO — aquecimento
+  // não entra na contagem nem nos pontinhos.
+  function toggleSet(exName, workIdx, total) {
     patchCompleted(key, (cc) => {
       const cur = cc[exName] || 0;
-      const next = idx < cur ? idx : Math.min(total, idx + 1);
+      const next = workIdx < cur ? workIdx : Math.min(total, workIdx + 1);
       return { ...cc, [exName]: next };
+    });
+  }
+  // Aquecimento tem o seu próprio "feito", guardado na linha, sem afetar o progresso.
+  function toggleRowDone(exName, idx) {
+    patchDraft(key, (dd) => {
+      const ex = day.exercises.find((e) => e.name === exName);
+      const rows = dd[exName] ? [...dd[exName]] : baseRows(ex);
+      rows[idx] = { ...rows[idx], done: !rows[idx].done };
+      return { ...dd, [exName]: rows };
     });
   }
 
@@ -564,11 +575,12 @@ export default function WorkoutTab({ who, p, catalog = [], exLoading = false, on
           const pr = bestSet(exLogs);
           const last = exLogs[0];
           const restSecs = parseRestSeconds(ex.rest);
-          const totalSets = setCount(ex.sets);
-          const doneSets = completedSets[ex.name] || 0;
           const isResting = timer && !timer.done && timer.key === key && timer.label === ex.name;
           // valores mostrados: o que está no rascunho (editado) ou o último treino salvo
           const rows = draft[ex.name] || baseRows(ex);
+          // Progresso e timer contam SÓ séries de trabalho: aquecimento é extra.
+          const totalSets = rows.filter((r) => !r.warmup).length || setCount(ex.sets);
+          const doneSets = Math.min(completedSets[ex.name] || 0, totalSets);
           return (
             <div key={ex.placementId || ex.id || ex.name} className="ex-row" style={{
               background: i % 2 === 0 ? "rgba(255,255,255,0.025)" : "transparent",
@@ -670,12 +682,13 @@ export default function WorkoutTab({ who, p, catalog = [], exLoading = false, on
                 <div style={{ ...label, marginBottom: 6 }}>Registrar séries</div>
                 <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
                   {rows.map((r, idx) => {
-                    const isDone = idx < doneSets;
                     const isW = !!r.warmup;
+                    const workIdx = rows.slice(0, idx).filter((x) => !x.warmup).length; // posição entre as de trabalho
+                    const isDone = isW ? !!r.done : workIdx < doneSets;
                     return (
                       <div key={idx} style={{ display: "flex", alignItems: "center", gap: 8, opacity: isW ? 0.62 : 1 }}>
                         <button
-                          onClick={() => toggleSet(ex.name, idx, rows.length)}
+                          onClick={() => (isW ? toggleRowDone(ex.name, idx) : toggleSet(ex.name, workIdx, totalSets))}
                           title={isDone ? "Marcar série como NÃO feita" : "Marcar série como feita"}
                           style={{
                             width: 18, height: 18, borderRadius: 5, flexShrink: 0, cursor: "pointer", padding: 0,
@@ -684,7 +697,7 @@ export default function WorkoutTab({ who, p, catalog = [], exLoading = false, on
                             color: isDone ? "#7CFC9B" : "#555", fontSize: 10,
                             fontFamily: "'DM Mono', monospace",
                             display: "flex", alignItems: "center", justifyContent: "center",
-                          }}>{isDone ? "✓" : idx + 1}</button>
+                          }}>{isDone ? "✓" : (isW ? "aq" : workIdx + 1)}</button>
                         <input type="number" inputMode="decimal" placeholder="kg"
                           value={r.weight}
                           onChange={(e) => setCell(ex.name, idx, "weight", e.target.value)} style={miniInput} />
