@@ -39,9 +39,19 @@ const RIRBadge = ({ rir, color }) => (
   }}>{rir}</span>
 );
 
+/* ---------- Mídia de execução ----------
+   media_url do catálogo aceita:
+     · uma URL única (GIF/imagem), ou
+     · duas URLs separadas por "|" (posição inicial | posição final),
+       que o app alterna como animação de dois quadros.
+   Quem preenche é scripts/seed-exercise-media.mjs (free-exercise-db) ou o editor ✎. */
+function mediaFrames(mediaUrl) {
+  return String(mediaUrl || "").split("|").map((u) => u.trim()).filter(Boolean);
+}
+
 /* ---------- Persistência local do treino em andamento ----------
    Guarda rascunho + progresso no aparelho p/ sobreviver a recarregar a página.
-   É por aparelho (não sincroniza entre Isa/Luca) — o que sincroniza é o treino salvo. */
+   É por aparelho (não sincroniza entre Bela/Luca) — o que sincroniza é o treino salvo. */
 const WIP_KEY = "treino-duo:wip";
 function loadWipPart(part) {
   try {
@@ -69,6 +79,9 @@ export default function WorkoutTab({ who, p, catalog = [], exLoading = false, on
   // Dá feedback instantâneo sem esperar o round-trip; some quando o banco confirma.
   const [orderOverride, setOrderOverride] = useState({});
   const [reordering, setReordering] = useState(false);
+
+  // ----- Visualizador de execução (▶) -----
+  const [viewing, setViewing] = useState(null);   // exercício aberto no visualizador | null
 
   // ----- Timer de descanso -----
   // timer: { key, label, maxSets, total, remaining, endAt, running, done } | null
@@ -382,7 +395,7 @@ export default function WorkoutTab({ who, p, catalog = [], exLoading = false, on
     setEditing({
       _mode: "edit",
       placementId: ex.placementId, catalogId: ex.id,
-      name: ex.name, muscles: ex.muscles,
+      name: ex.name, muscles: ex.muscles, mediaUrl: ex.mediaUrl || "",
       sets: ex.sets, reps: ex.reps, rest: ex.rest, rir: ex.rir,
       note: ex.note, priority: !!ex.priority,
       // estado de troca (começa desligado)
@@ -428,7 +441,10 @@ export default function WorkoutTab({ who, p, catalog = [], exLoading = false, on
         } else {
           // Editar o catálogo (nome/músculos — afeta todos os planos) e a prescrição.
           if (!editing.name?.trim()) { setMsg("O exercício precisa de um nome."); setSavingEx(false); return; }
-          await updateCatalogExercise(editing.catalogId, { name: editing.name, muscles: editing.muscles });
+          await updateCatalogExercise(editing.catalogId, {
+            name: editing.name, muscles: editing.muscles,
+            media_url: (editing.mediaUrl || "").trim() || null,
+          });
           await updatePlanExercise(editing.placementId, prescription);
         }
       }
@@ -573,6 +589,10 @@ export default function WorkoutTab({ who, p, catalog = [], exLoading = false, on
                   }}>{i + 1}</span>
                   <div>
                     <span style={{ fontWeight: 600, fontSize: 13 }}>{ex.name}</span>
+                    {ex.mediaUrl && (
+                      <button onClick={() => setViewing(ex)} title="Ver execução" aria-label={`Ver execução de ${ex.name}`}
+                        className="hover-lift" style={playBtn(p.color)}>▶</button>
+                    )}
                     {ex.priority && <span style={{ marginLeft: 6, fontSize: 9, color: p.accent, fontFamily: "'DM Mono', monospace", background: p.color + "22", borderRadius: 3, padding: "1px 5px" }}>PRIORIDADE</span>}
                   </div>
                 </div>
@@ -713,6 +733,9 @@ export default function WorkoutTab({ who, p, catalog = [], exLoading = false, on
         }}>＋ Adicionar exercício ao Treino {activeDay}</button>
       )}
 
+      {/* Visualizador de execução */}
+      {viewing && <ExerciseMediaSheet ex={viewing} p={p} onClose={() => setViewing(null)} />}
+
       {/* Editor de exercício */}
       {editing && (
         <ExerciseEditor
@@ -747,6 +770,150 @@ export default function WorkoutTab({ who, p, catalog = [], exLoading = false, on
     </div>
   );
 }
+
+/* =================== VISUALIZADOR DE EXECUÇÃO =================== */
+// Folha que sobe do rodapé com a animação de dois quadros (ou o GIF),
+// músculos, dicas e instruções do catálogo. Fecha por ✕, Esc ou toque fora.
+function ExerciseMediaSheet({ ex, p, onClose }) {
+  const frames = mediaFrames(ex.mediaUrl);
+  const twoFrames = frames.length >= 2;
+  const reduceMotion = typeof window !== "undefined"
+    && window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+  const [frame, setFrame] = useState(0);
+  const [playing, setPlaying] = useState(!reduceMotion);
+  const [failed, setFailed] = useState(false);
+
+  // Alterna os quadros; pausa se o usuário tocar na imagem ou se pedir menos movimento.
+  useEffect(() => {
+    if (!twoFrames || !playing) return;
+    const t = setInterval(() => setFrame((f) => (f + 1) % frames.length), 900);
+    return () => clearInterval(t);
+  }, [twoFrames, playing, frames.length]);
+
+  useEffect(() => {
+    const onKey = (e) => { if (e.key === "Escape") onClose(); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
+  const src = frames[twoFrames ? frame : 0];
+  const captionMono = { fontFamily: "'DM Mono', monospace", fontSize: 10, color: "#777", letterSpacing: "0.06em", textTransform: "uppercase" };
+
+  return (
+    <div onClick={onClose} role="dialog" aria-modal="true" aria-label={`Execução: ${ex.name}`} style={{
+      position: "fixed", inset: 0, zIndex: 60,
+      background: "rgba(0,0,0,0.65)", backdropFilter: "blur(4px)",
+      display: "flex", alignItems: "flex-end", justifyContent: "center",
+    }}>
+      <div onClick={(e) => e.stopPropagation()} style={{
+        width: "100%", maxWidth: 520, maxHeight: "92vh", overflowY: "auto",
+        background: "#14141c", borderTop: `2px solid ${p.color}`,
+        borderRadius: "18px 18px 0 0", padding: "16px 18px 28px",
+      }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12, marginBottom: 12 }}>
+          <div>
+            <div style={{ fontFamily: "'Bebas Neue', sans-serif", fontSize: 24, color: p.accent, letterSpacing: "0.05em", lineHeight: 1.1 }}>
+              {ex.name}
+            </div>
+            {ex.muscles && <div style={{ fontSize: 11, color: "#888", marginTop: 2 }}>{ex.muscles}</div>}
+          </div>
+          <button onClick={onClose} aria-label="Fechar" style={{ background: "none", border: "none", color: "#888", fontSize: 22, cursor: "pointer", lineHeight: 1, padding: "0 2px" }}>✕</button>
+        </div>
+
+        {/* Mídia */}
+        <div style={{ position: "relative", background: "#fff", borderRadius: 12, overflow: "hidden" }}>
+          {failed ? (
+            <div style={{ padding: 28, textAlign: "center", color: "#555", fontSize: 12, background: "#1a1a24" }}>
+              Não foi possível carregar a imagem. Confira a URL no modo ✎ Editar plano.
+            </div>
+          ) : (
+            <img
+              src={src} alt={`${ex.name} — ${twoFrames ? (frame === 0 ? "posição inicial" : "posição final") : "execução"}`}
+              onClick={() => { if (twoFrames) { setPlaying(false); setFrame((f) => (f + 1) % frames.length); } }}
+              onError={() => setFailed(true)}
+              style={{ display: "block", width: "100%", maxHeight: "48vh", objectFit: "contain", cursor: twoFrames ? "pointer" : "default", userSelect: "none" }}
+            />
+          )}
+          {twoFrames && !failed && (
+            <div style={{ position: "absolute", left: 10, bottom: 10, display: "flex", gap: 6, alignItems: "center" }}>
+              {frames.map((_, i) => (
+                <span key={i} style={{ width: 8, height: 8, borderRadius: 4, background: i === frame ? p.color : "rgba(0,0,0,0.25)" }} />
+              ))}
+            </div>
+          )}
+        </div>
+
+        {twoFrames && !failed && (
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 8 }}>
+            <span style={captionMono}>{frame === 0 ? "Posição inicial" : "Posição final"} · toque para avançar</span>
+            <button onClick={() => setPlaying((v) => !v)} style={{
+              background: "none", border: `1px solid ${p.color}55`, color: p.accent,
+              borderRadius: 7, padding: "3px 9px", fontSize: 11, cursor: "pointer",
+            }}>{playing ? "⏸ Pausar" : "▶ Animar"}</button>
+          </div>
+        )}
+
+        {/* Prescrição + instruções do catálogo */}
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 14 }}>
+          {ex.sets && ex.reps && <span style={chip(p.color)}>{ex.sets} × {ex.reps}</span>}
+          {ex.rest && <span style={chip(p.color)}>⏱ {ex.rest}</span>}
+          {ex.rir && <span style={chip(p.color)}>{ex.rir}</span>}
+        </div>
+        {ex.note && <p style={{ fontSize: 12, color: "#bbb", lineHeight: 1.55, margin: "12px 0 0" }}>{ex.note}</p>}
+        {ex.tips && (
+          <>
+            <div style={{ ...captionMono, marginTop: 14, marginBottom: 4 }}>Dicas</div>
+            <p style={{ fontSize: 12, color: "#bbb", lineHeight: 1.55, margin: 0, whiteSpace: "pre-line" }}>{ex.tips}</p>
+          </>
+        )}
+        {ex.instructions && (
+          <>
+            <div style={{ ...captionMono, marginTop: 14, marginBottom: 4 }}>Execução</div>
+            <p style={{ fontSize: 12, color: "#bbb", lineHeight: 1.55, margin: 0, whiteSpace: "pre-line" }}>{ex.instructions}</p>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// Prévia pequena no editor: mostra o(s) quadro(s) da URL digitada.
+function MediaPreview({ mediaUrl, p }) {
+  const frames = mediaFrames(mediaUrl);
+  const [broken, setBroken] = useState({});
+  useEffect(() => { setBroken({}); }, [mediaUrl]);
+  if (frames.length === 0) {
+    return (
+      <div style={{ fontSize: 10, color: "#666", lineHeight: 1.5, margin: "-6px 0 12px" }}>
+        Sem imagem. Cole a URL de um GIF, ou de duas fotos (inicial|final) separadas por “|”.
+      </div>
+    );
+  }
+  return (
+    <div style={{ display: "flex", gap: 8, margin: "-4px 0 12px" }}>
+      {frames.slice(0, 2).map((u, i) => (
+        <div key={i} style={{ width: 96, height: 72, borderRadius: 8, overflow: "hidden", background: "#fff", border: `1px solid ${p.color}33`, flexShrink: 0 }}>
+          {broken[i]
+            ? <div style={{ height: "100%", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 10, color: "#a33", background: "#1a1a24", textAlign: "center", padding: 4 }}>não carregou</div>
+            : <img src={u} alt="" onError={() => setBroken((b) => ({ ...b, [i]: true }))} style={{ width: "100%", height: "100%", objectFit: "contain", display: "block" }} />}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+const chip = (color) => ({
+  fontFamily: "'DM Mono', monospace", fontSize: 11, color,
+  background: color + "18", border: `1px solid ${color}44`, borderRadius: 6, padding: "3px 8px",
+});
+
+const playBtn = (color) => ({
+  marginLeft: 6, background: color + "22", border: `1px solid ${color}55`, color,
+  borderRadius: 5, width: 22, height: 20, fontSize: 9, lineHeight: 1,
+  display: "inline-flex", alignItems: "center", justifyContent: "center",
+  cursor: "pointer", verticalAlign: "middle", padding: 0,
+});
 
 /* =================== BARRA DO TIMER =================== */
 function RestTimerBar({ timer, p, muted, onToggleMute, onPauseResume, onAdjust, onStop }) {
@@ -981,6 +1148,11 @@ function ExerciseEditor({ editing, setEditing, p, dayId, saving, catalog, exclud
             <EditorField label="Músculos">
               <input value={editing.muscles || ""} onChange={(e) => set("muscles", e.target.value)} style={fullInput} placeholder="Quadríceps, Glúteos" />
             </EditorField>
+            <EditorField label="Imagem ou GIF de execução (URL)">
+              <input value={editing.mediaUrl || ""} onChange={(e) => set("mediaUrl", e.target.value)} style={fullInput}
+                placeholder="https://… (ou duas fotos: inicial|final)" inputMode="url" />
+            </EditorField>
+            <MediaPreview mediaUrl={editing.mediaUrl} p={p} />
             <div style={{ height: 1, background: "#2a2a35", margin: "6px 0 16px" }} />
           </>
         )}

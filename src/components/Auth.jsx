@@ -70,7 +70,7 @@ export default function Auth() {
 
         <p style={{ color: "#555", fontSize: 11, lineHeight: 1.6, marginTop: 18 }}>
           Vocês usam <strong style={{ color: "#888" }}>um login só</strong>, compartilhado entre os dois.
-          O perfil (Isa/Luca) é escolhido dentro do app.
+          O perfil (Bela/Luca) é escolhido dentro do app.
         </p>
       </div>
     </div>

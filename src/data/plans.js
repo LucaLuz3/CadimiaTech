@@ -3,7 +3,7 @@
 
 export const profiles = {
   isa: {
-    name: "Isa",
+    name: "Bela",
     weight: 57.5,
     height: 163,
     emoji: "🐈‍⬛",
