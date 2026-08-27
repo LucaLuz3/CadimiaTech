@@ -1,4 +1,5 @@
 import { useState, useEffect, useMemo, useRef } from "react";
+import { font, color, space, radius, tap, tint, chip, chipMuted, numInput, iconBtn } from "../theme";
 import {
   saveWorkoutLog, getWorkoutLogs, bestSet,
   updatePlanExercise, addPlanExercise, deactivatePlanExercise, swapPlanExercise,
@@ -83,6 +84,12 @@ export default function WorkoutTab({ who, p, catalog = [], exLoading = false, on
   // ----- Visualizador de execução (▶) -----
   const [viewing, setViewing] = useState(null);   // exercício aberto no visualizador | null
 
+  // ----- Modo foco: um exercício expandido por vez -----
+  // openKey = placementId do exercício aberto. Ao trocar de dia, abre o 1º pendente.
+  // Quando o descanso da última série zera, avança para o próximo sozinho.
+  const [openKey, setOpenKey] = useState(null);
+  const [advanceFrom, setAdvanceFrom] = useState(null); // { key, exName } pedido pelo timer
+
   // ----- Timer de descanso -----
   // timer: { key, label, maxSets, total, remaining, endAt, running, done } | null
   const [timer, setTimer] = useState(null);
@@ -129,6 +136,32 @@ export default function WorkoutTab({ who, p, catalog = [], exLoading = false, on
   useEffect(() => { setMsg(""); setLogs([]); refresh(); }, [who]);
   // Ao trocar de dia: só limpa a mensagem (rascunho/progresso ficam guardados por perfil:dia:data)
   useEffect(() => { setMsg(""); }, [activeDay]);
+  // Ao trocar de dia/perfil (ou quando o plano chega): abre o primeiro exercício ainda não concluído.
+  useEffect(() => {
+    const list = orderedExercises;
+    if (!list.length) { setOpenKey(null); return; }
+    const cc = completedMap[key] || {};
+    const firstPending = list.find((e) => (cc[e.name] || 0) < setCount(e.sets)) || list[0];
+    setOpenKey(firstPending.placementId || firstPending.id || firstPending.name);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [who, activeDay, day?.exercises?.length]);
+
+  // Avanço automático: o timer pediu para conferir se o exercício terminou.
+  useEffect(() => {
+    if (!advanceFrom) return;
+    setAdvanceFrom(null);
+    if (advanceFrom.key !== key) return;                       // timer de outro dia/perfil: ignora
+    const list = orderedExercises;
+    const idx = list.findIndex((e) => e.name === advanceFrom.exName);
+    if (idx < 0) return;
+    const ex = list[idx];
+    const rows = draft[ex.name] || baseRows(ex);
+    const total = rows.filter((r) => !r.warmup).length || setCount(ex.sets);
+    if ((completedSets[ex.name] || 0) < total) return;         // ainda faltam séries
+    const next = list[idx + 1];
+    if (next) setOpenKey(next.placementId || next.id || next.name);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [advanceFrom, completedMap]);
 
   /* ---------- Patches do estado por "perfil:dia:data" ---------- */
   function patchDraft(k, updater) {
@@ -261,6 +294,7 @@ export default function WorkoutTab({ who, p, catalog = [], exLoading = false, on
         buzz();
         // ✅ ao zerar o descanso, marca a próxima série pendente — no perfil/dia/data em que o timer começou
         markSetDone(timer.key, timer.label, timer.maxSets);
+        setAdvanceFrom({ key: timer.key, exName: timer.label });
         setTimer((t) => (t ? { ...t, running: false, endAt: null, remaining: 0, done: true } : t));
         return;
       }
@@ -516,222 +550,219 @@ export default function WorkoutTab({ who, p, catalog = [], exLoading = false, on
 
   return (
     <div className="fade-in">
-      {/* Day Selector */}
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8, marginBottom: 20 }}>
-        {p.days.map((d) => (
-          <button key={d.id} className="hover-lift" onClick={() => setActiveDay(d.id)} style={{
-            background: activeDay === d.id ? `linear-gradient(135deg, ${p.color}bb, ${p.color}77)` : "rgba(255,255,255,0.04)",
-            border: `1px solid ${activeDay === d.id ? p.color : "#2a2a35"}`,
-            borderRadius: 10,
-            padding: "12px 8px",
-            textAlign: "center",
-            color: "#fff",
-            cursor: "pointer",
-          }}>
-            <div style={{ fontFamily: "'Bebas Neue', sans-serif", fontSize: 30, color: activeDay === d.id ? p.accent : "#444", lineHeight: 1 }}>{d.id}</div>
-            <div style={{ fontSize: 10, color: activeDay === d.id ? "#ddd" : "#444", marginTop: 3, fontFamily: "'DM Mono', monospace" }}>TREINO {d.id}</div>
-          </button>
-        ))}
-      </div>
-
-      {/* Day theme + data do registro */}
-      <div style={{ display: "flex", gap: 8, alignItems: "stretch", marginBottom: 14, flexWrap: "wrap" }}>
-        <div style={{
-          flex: 1, minWidth: 200,
-          background: `${p.color}18`,
-          border: `1px solid ${p.color}33`,
-          borderRadius: 10,
-          padding: "12px 16px",
-          display: "flex",
-          alignItems: "center",
-          gap: 10,
+      {/* ===== Cabeçalho compacto: seletor A/B/C + faixa do treino ===== */}
+      <div style={{
+        background: color.surface, border: `1px solid ${color.lineSoft}`,
+        borderRadius: radius.lg, padding: space.sm, marginBottom: space.md,
+      }}>
+        <div role="tablist" aria-label="Dia de treino" style={{
+          display: "grid", gridTemplateColumns: `repeat(${p.days.length}, 1fr)`,
+          gap: 4, padding: 3, background: "rgba(0,0,0,0.35)", borderRadius: radius.md,
         }}>
-          <span style={{ fontFamily: "'Bebas Neue', sans-serif", fontSize: 22, color: p.accent, letterSpacing: "0.05em" }}>TREINO {day.id}</span>
-          <span style={{ color: "#666" }}>·</span>
-          <span style={{ color: "#bbb", fontSize: 12 }}>{day.theme}</span>
+          {p.days.map((d) => {
+            const on = activeDay === d.id;
+            return (
+              <button key={d.id} role="tab" aria-selected={on} onClick={() => setActiveDay(d.id)} style={{
+                height: 40, border: "none", cursor: "pointer", borderRadius: radius.sm,
+                background: on ? `linear-gradient(135deg, ${tint(p.color, 0xcc)}, ${tint(p.color, 0x88)})` : "transparent",
+                color: on ? "#fff" : color.text4, fontFamily: font.display, fontSize: 22, letterSpacing: "0.06em",
+                transition: "background 0.2s, color 0.2s",
+              }}>{d.id}</button>
+            );
+          })}
         </div>
-        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-          <span style={{ fontSize: 10, color: "#666", fontFamily: "'DM Mono', monospace", textTransform: "uppercase", letterSpacing: "0.06em" }}>Data</span>
-          <input type="date" value={date} max={today()} onChange={(e) => setDate(e.target.value)} style={dateInput} />
+
+        <div style={{ display: "flex", alignItems: "center", gap: space.sm, padding: `${space.md}px ${space.xs}px 4px` }}>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={{ fontFamily: font.display, fontSize: 22, color: p.accent, letterSpacing: "0.05em", lineHeight: 1 }}>
+              TREINO {day.id}
+            </div>
+            <div style={{ fontSize: 12, color: color.text2, marginTop: 3, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+              {day.theme}
+            </div>
+          </div>
+          <input type="date" value={date} max={today()} onChange={(e) => setDate(e.target.value)}
+            aria-label="Data do treino" style={dateInput} />
           <button
             onClick={() => { setEditMode((v) => !v); setEditing(null); }}
             className="hover-lift"
-            title={editMode ? "Sair do modo de edição" : "Editar exercícios do plano"}
-            style={{
-              background: editMode ? p.color + "33" : "rgba(255,255,255,0.05)",
-              border: `1px solid ${editMode ? p.color : "#2a2a35"}`,
-              borderRadius: 8, padding: "10px 12px", cursor: "pointer",
-              color: editMode ? p.accent : "#888", fontSize: 12, whiteSpace: "nowrap",
-            }}>
-            {editMode ? "✓ Editando" : "✎ Editar plano"}
+            aria-pressed={editMode}
+            title={editMode ? "Concluir edição do plano" : "Editar plano"}
+            style={iconBtn(p.color, editMode)}>
+            {editMode ? "✓" : "✎"}
           </button>
         </div>
+        {editMode && (
+          <div style={{ fontSize: 11, color: color.text3, padding: `0 ${space.xs}px ${space.xs}px` }}>
+            Modo edição: reordene com ▲▼, ✎ para alterar, 🗑 para remover. Toque em ✓ para concluir.
+          </div>
+        )}
       </div>
 
-      {/* Exercises */}
-      <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+      {/* ===== Exercícios (modo foco: um aberto por vez) ===== */}
+      <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
         {orderedExercises.map((ex, i) => {
           const exLogs = logsFor(ex);
           const pr = bestSet(exLogs);
           const last = exLogs[0];
           const restSecs = parseRestSeconds(ex.rest);
           const isResting = timer && !timer.done && timer.key === key && timer.label === ex.name;
-          // valores mostrados: o que está no rascunho (editado) ou o último treino salvo
           const rows = draft[ex.name] || baseRows(ex);
+          const prescribed = setCount(ex.sets);
           // Progresso e timer contam SÓ séries de trabalho: aquecimento é extra.
-          const totalSets = rows.filter((r) => !r.warmup).length || setCount(ex.sets);
+          const totalSets = rows.filter((r) => !r.warmup).length || prescribed;
           const doneSets = Math.min(completedSets[ex.name] || 0, totalSets);
+          const complete = totalSets > 0 && doneSets >= totalSets;
+          const exId = ex.placementId || ex.id || ex.name;
+          const open = !editMode && openKey === exId;
+
           return (
-            <div key={ex.placementId || ex.id || ex.name} className="ex-row" style={{
-              background: i % 2 === 0 ? "rgba(255,255,255,0.025)" : "transparent",
-              border: `1px solid ${ex.priority ? p.color + "44" : "rgba(255,255,255,0.06)"}`,
-              borderLeft: ex.priority ? `3px solid ${p.color}` : "1px solid rgba(255,255,255,0.06)",
-              borderRadius: 10,
-              padding: "12px 14px",
+            <div key={exId} className="ex-card" style={{
+              background: open ? color.surface2 : color.surface,
+              borderTop: `1px solid ${open ? tint(p.color, 0x66) : color.lineSoft}`,
+              borderRight: `1px solid ${open ? tint(p.color, 0x66) : color.lineSoft}`,
+              borderBottom: `1px solid ${open ? tint(p.color, 0x66) : color.lineSoft}`,
+              borderLeft: `3px solid ${ex.priority ? p.color : (complete ? color.success : "transparent")}`,
+              borderRadius: radius.lg,
+              transition: "background 0.2s, border-color 0.2s",
             }}>
-              {/* Cabeçalho do exercício */}
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 6 }}>
-                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                  <span style={{
-                    background: ex.priority ? p.color + "44" : "rgba(255,255,255,0.08)",
-                    color: ex.priority ? p.accent : "#555",
-                    borderRadius: 5, width: 24, height: 24,
-                    display: "flex", alignItems: "center", justifyContent: "center",
-                    fontSize: 10, fontFamily: "'DM Mono', monospace", fontWeight: 600, flexShrink: 0,
-                  }}>{i + 1}</span>
-                  <div>
-                    <span style={{ fontWeight: 600, fontSize: 13 }}>{ex.name}</span>
-                    {ex.mediaUrl && (
-                      <button onClick={() => setViewing(ex)} title="Ver execução" aria-label={`Ver execução de ${ex.name}`}
+              {/* ---- Linha de cabeçalho (sempre visível; toca para abrir/fechar) ---- */}
+              <div
+                role={editMode ? undefined : "button"}
+                tabIndex={editMode ? -1 : 0}
+                aria-expanded={editMode ? undefined : open}
+                onClick={() => { if (!editMode) setOpenKey(open ? null : exId); }}
+                onKeyDown={(e) => { if (!editMode && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); setOpenKey(open ? null : exId); } }}
+                style={{
+                  display: "flex", alignItems: "center", gap: space.sm,
+                  padding: `${space.sm + 2}px ${space.md}px`, minHeight: 48, cursor: editMode ? "default" : "pointer",
+                }}>
+                <span style={{
+                  width: 24, height: 24, borderRadius: radius.sm, flexShrink: 0,
+                  display: "flex", alignItems: "center", justifyContent: "center",
+                  background: complete ? tint(color.success, 0x22) : (ex.priority ? tint(p.color, 0x44) : color.surface2),
+                  color: complete ? color.success : (ex.priority ? p.accent : color.text4),
+                  fontSize: 10, fontFamily: font.mono, fontWeight: 600,
+                }}>{complete ? "✓" : i + 1}</span>
+
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 6, minWidth: 0 }}>
+                    <span style={{
+                      fontWeight: 600, fontSize: 14, color: open ? color.text : color.text2,
+                      whiteSpace: open ? "normal" : "nowrap", overflow: "hidden", textOverflow: "ellipsis",
+                    }}>{ex.name}</span>
+                    {ex.mediaUrl && !editMode && (
+                      <button onClick={(e) => { e.stopPropagation(); setViewing(ex); }}
+                        title="Ver execução" aria-label={`Ver execução de ${ex.name}`}
                         className="hover-lift" style={playBtn(p.color)}>▶</button>
                     )}
-                    {ex.priority && <span style={{ marginLeft: 6, fontSize: 9, color: p.accent, fontFamily: "'DM Mono', monospace", background: p.color + "22", borderRadius: 3, padding: "1px 5px" }}>PRIORIDADE</span>}
                   </div>
-                </div>
-                {/* Progresso de séries + RIR (ou ações de edição) */}
-                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                  {editMode ? (
-                    <>
-                      <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
-                        <button onClick={() => moveEx(orderedExercises, i, -1)} disabled={i === 0 || reordering}
-                          title="Mover para cima" className="hover-lift" style={arrowBtn(p.color, i === 0 || reordering)}>▲</button>
-                        <button onClick={() => moveEx(orderedExercises, i, +1)} disabled={i === orderedExercises.length - 1 || reordering}
-                          title="Mover para baixo" className="hover-lift" style={arrowBtn(p.color, i === orderedExercises.length - 1 || reordering)}>▼</button>
-                      </div>
-                      <button onClick={() => openEdit(ex)} title="Editar exercício" className="hover-lift" style={miniActionBtn(p.color)}>✎</button>
-                      <button onClick={() => removeEx(ex)} title="Remover do plano" className="hover-lift" style={miniActionBtn("#ff7676")}>🗑</button>
-                    </>
-                  ) : (
-                    <>
-                      <SetProgress done={doneSets} total={totalSets} />
-                      <RIRBadge rir={ex.rir} color={p.color} />
-                    </>
+                  {!open && (
+                    <div style={{ fontFamily: font.mono, fontSize: 10, color: color.text4, marginTop: 2, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                      {ex.sets} × {ex.reps} · {mmss(restSecs)}{ex.priority ? " · prioridade" : ""}
+                    </div>
                   )}
                 </div>
+
+                {editMode ? (
+                  <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                    <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+                      <button onClick={() => moveEx(orderedExercises, i, -1)} disabled={i === 0 || reordering}
+                        title="Mover para cima" style={arrowBtn(p.color, i === 0 || reordering)}>▲</button>
+                      <button onClick={() => moveEx(orderedExercises, i, +1)} disabled={i === orderedExercises.length - 1 || reordering}
+                        title="Mover para baixo" style={arrowBtn(p.color, i === orderedExercises.length - 1 || reordering)}>▼</button>
+                    </div>
+                    <button onClick={() => openEdit(ex)} title="Editar exercício" className="hover-lift" style={miniActionBtn(p.color)}>✎</button>
+                    <button onClick={() => removeEx(ex)} title="Remover do plano" className="hover-lift" style={miniActionBtn(color.danger)}>🗑</button>
+                  </div>
+                ) : (
+                  <div style={{ display: "flex", alignItems: "center", gap: space.sm, flexShrink: 0 }}>
+                    <SetProgress done={doneSets} total={totalSets} />
+                    {open && <RIRBadge rir={ex.rir} color={p.color} />}
+                  </div>
+                )}
               </div>
 
-              {/* Meta do exercício — o Intervalo vira botão p/ iniciar o descanso */}
-              <div style={{ display: "flex", gap: 12, marginLeft: 32, flexWrap: "wrap", alignItems: "flex-end" }}>
-                <div>
-                  <div style={label}>Séries × Reps</div>
-                  <div style={{ fontFamily: "'DM Mono', monospace", fontSize: 12, color: p.accent }}>{ex.sets} × {ex.reps}</div>
-                </div>
-                <div>
-                  <div style={label}>Intervalo</div>
-                  <button
-                    onClick={() => startRest(restSecs, ex.name, totalSets)}
-                    className="hover-lift"
-                    title={`Iniciar descanso de ${mmss(restSecs)} (marca a próxima série ao zerar)`}
-                    style={{
-                      display: "inline-flex", alignItems: "center", gap: 5,
-                      background: isResting ? p.color + "33" : p.color + "1a",
-                      border: `1px solid ${isResting ? p.color : p.color + "44"}`,
-                      borderRadius: 7, padding: "4px 9px", cursor: "pointer",
-                      color: p.accent, fontFamily: "'DM Mono', monospace", fontSize: 12,
-                    }}>
-                    ⏱ {mmss(restSecs)}
-                  </button>
-                </div>
-                <div style={{ flex: 1, minWidth: 100 }}>
-                  <div style={label}>Músculos</div>
-                  <div style={{ fontSize: 11, color: "#777" }}>{ex.muscles}</div>
-                </div>
-              </div>
+              {/* ---- Corpo (só do exercício aberto) ---- */}
+              {open && (
+                <div style={{ padding: `0 ${space.md}px ${space.md}px`, borderTop: `1px solid ${color.lineSoft}` }}>
+                  {/* Prescrição em chips + ação principal (descanso) */}
+                  <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap", paddingTop: space.md }}>
+                    <span style={chip(p.accent)}>{ex.sets} × {ex.reps}</span>
+                    {pr && <span style={chip(p.accent)} title="Melhor série registrada">🏆 {pr.weight} × {pr.reps}</span>}
+                    {last && <span style={chipMuted} title="Último treino salvo">último {fmtShort(last.date)}</span>}
+                    <button
+                      onClick={() => startRest(restSecs, ex.name, totalSets)}
+                      className="hover-lift"
+                      title={`Iniciar descanso de ${mmss(restSecs)} — marca a próxima série ao zerar`}
+                      style={{
+                        marginLeft: "auto", height: 34, padding: "0 12px", cursor: "pointer",
+                        display: "inline-flex", alignItems: "center", gap: 6,
+                        background: isResting ? tint(p.color, 0x44) : `linear-gradient(135deg, ${tint(p.color, 0x55)}, ${tint(p.color, 0x33)})`,
+                        border: `1px solid ${isResting ? p.color : tint(p.color, 0x77)}`,
+                        borderRadius: radius.md, color: "#fff",
+                        fontFamily: font.mono, fontSize: 13, fontWeight: 600,
+                      }}>
+                      ⏱ {mmss(restSecs)}
+                    </button>
+                  </div>
+                  {ex.muscles && <div style={{ fontSize: 11, color: color.text3, marginTop: space.sm }}>{ex.muscles}</div>}
+                  {ex.note && <div style={{ fontSize: 11, color: color.text3, fontStyle: "italic", marginTop: 4 }}>💡 {ex.note}</div>}
 
-              {/* Dica */}
-              {ex.note && (
-                <div style={{
-                  marginLeft: 32, marginTop: 8, padding: "5px 10px",
-                  background: "rgba(255,255,255,0.03)",
-                  borderLeft: `2px solid ${p.color}66`,
-                  borderRadius: "0 6px 6px 0",
-                  fontSize: 11, color: "#777", fontStyle: "italic",
-                }}>💡 {ex.note}</div>
+                  {/* Séries: grade fixa [✓] [kg] × [reps] [aq] [×] */}
+                  <div style={{ display: "flex", flexDirection: "column", gap: 6, marginTop: space.md }}>
+                    {rows.map((r, idx) => {
+                      const isW = !!r.warmup;
+                      const workIdx = rows.slice(0, idx).filter((x) => !x.warmup).length; // posição entre as de trabalho
+                      const isDone = isW ? !!r.done : workIdx < doneSets;
+                      const removable = isW || workIdx >= prescribed; // só linhas além da prescrição
+                      const holder = last?.sets?.[idx];
+                      return (
+                        <div key={idx} style={{ ...setGrid, opacity: isW && !isDone ? 0.7 : 1 }}>
+                          <button
+                            onClick={() => (isW ? toggleRowDone(ex.name, idx) : toggleSet(ex.name, workIdx, totalSets))}
+                            aria-pressed={isDone}
+                            title={isDone ? "Marcar como não feita" : "Marcar como feita"}
+                            style={{
+                              height: tap, borderRadius: radius.md, cursor: "pointer", padding: 0,
+                              border: `1px solid ${isDone ? color.success : (isW ? tint(color.warn, 0x66) : color.line)}`,
+                              background: isDone ? tint(color.success, 0x22) : "transparent",
+                              color: isDone ? color.success : (isW ? color.warn : color.text3),
+                              fontSize: isW ? 10 : 12, fontFamily: font.mono, fontWeight: 600,
+                              display: "flex", alignItems: "center", justifyContent: "center",
+                            }}>{isDone ? "✓" : (isW ? "aq" : workIdx + 1)}</button>
+                          <input type="number" inputMode="decimal" placeholder={holder ? String(holder.weight) : "kg"} aria-label="Carga em kg"
+                            value={r.weight} onChange={(e) => setCell(ex.name, idx, "weight", e.target.value)} style={numInput} />
+                          <span style={{ color: color.text4, fontSize: 12, textAlign: "center" }}>×</span>
+                          <input type="number" inputMode="numeric" placeholder={holder ? String(holder.reps) : "reps"} aria-label="Repetições"
+                            value={r.reps} onChange={(e) => setCell(ex.name, idx, "reps", e.target.value)} style={numInput} />
+                          <button
+                            onClick={() => toggleWarmup(ex.name, idx)}
+                            aria-pressed={isW}
+                            title={isW ? "Aquecimento: não conta como volume nem PR. Toque para virar série de trabalho." : "Marcar como aquecimento"}
+                            style={{
+                              height: tap, borderRadius: radius.md, cursor: "pointer", padding: 0,
+                              border: `1px solid ${isW ? color.warn : color.line}`,
+                              background: isW ? tint(color.warn, 0x1f) : "transparent",
+                              color: isW ? color.warn : color.text5, fontSize: 10, fontFamily: font.mono,
+                            }}>aq</button>
+                          {removable ? (
+                            <button onClick={() => removeRow(ex.name, idx)} title="Remover esta linha" aria-label="Remover linha" style={{
+                              height: tap, borderRadius: radius.md, cursor: "pointer", padding: 0,
+                              border: "1px solid transparent", background: "transparent",
+                              color: color.text5, fontSize: 16, lineHeight: 1,
+                            }}>×</button>
+                          ) : <span />}
+                        </div>
+                      );
+                    })}
+                  </div>
+                  <div style={{ display: "flex", gap: space.sm, marginTop: space.sm }}>
+                    <button onClick={() => addRow(ex.name, true)} style={addRowBtn(color.warn)}>＋ aquecimento</button>
+                    <button onClick={() => addRow(ex.name, false)} style={addRowBtn(color.text3)}>＋ série</button>
+                  </div>
+                </div>
               )}
-
-              {/* PR + último treino */}
-              {(pr || last) && (
-                <div style={{ display: "flex", gap: 14, margin: "10px 0 6px 32px", fontSize: 10, fontFamily: "'DM Mono', monospace", flexWrap: "wrap" }}>
-                  {pr && <span style={{ color: p.accent }}>🏆 PR: {pr.weight}kg × {pr.reps}</span>}
-                  {last && <span style={{ color: "#666" }}>último ({fmtShort(last.date)}): {(last.sets || []).map((s) => `${s.weight}×${s.reps}${s.warmup ? " (aq)" : ""}`).join(", ")}</span>}
-                </div>
-              )}
-
-              {/* Registro de séries */}
-              <div style={{ marginLeft: 32, marginTop: 8 }}>
-                <div style={{ ...label, marginBottom: 6 }}>Registrar séries</div>
-                <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
-                  {rows.map((r, idx) => {
-                    const isW = !!r.warmup;
-                    const workIdx = rows.slice(0, idx).filter((x) => !x.warmup).length; // posição entre as de trabalho
-                    const isDone = isW ? !!r.done : workIdx < doneSets;
-                    return (
-                      <div key={idx} style={{ display: "flex", alignItems: "center", gap: 8, opacity: isW ? 0.62 : 1 }}>
-                        <button
-                          onClick={() => (isW ? toggleRowDone(ex.name, idx) : toggleSet(ex.name, workIdx, totalSets))}
-                          title={isDone ? "Marcar série como NÃO feita" : "Marcar série como feita"}
-                          style={{
-                            width: 18, height: 18, borderRadius: 5, flexShrink: 0, cursor: "pointer", padding: 0,
-                            border: `1px solid ${isDone ? "#7CFC9B" : "#3a3a45"}`,
-                            background: isDone ? "#7CFC9B22" : "transparent",
-                            color: isDone ? "#7CFC9B" : "#555", fontSize: 10,
-                            fontFamily: "'DM Mono', monospace",
-                            display: "flex", alignItems: "center", justifyContent: "center",
-                          }}>{isDone ? "✓" : (isW ? "aq" : workIdx + 1)}</button>
-                        <input type="number" inputMode="decimal" placeholder="kg"
-                          value={r.weight}
-                          onChange={(e) => setCell(ex.name, idx, "weight", e.target.value)} style={miniInput} />
-                        <span style={{ color: "#555", fontSize: 12 }}>×</span>
-                        <input type="number" inputMode="numeric" placeholder="reps"
-                          value={r.reps}
-                          onChange={(e) => setCell(ex.name, idx, "reps", e.target.value)} style={miniInput} />
-                        <button
-                          onClick={() => toggleWarmup(ex.name, idx)}
-                          title={isW ? "É aquecimento — não conta como volume nem PR. Clique para virar série de trabalho." : "Marcar como aquecimento"}
-                          style={{
-                            width: 22, height: 20, borderRadius: 5, flexShrink: 0, cursor: "pointer", padding: 0,
-                            border: `1px solid ${isW ? "#ffc46b" : "#2f2f38"}`,
-                            background: isW ? "#ffc46b1f" : "transparent",
-                            color: isW ? "#ffc46b" : "#4a4a55", fontSize: 9,
-                            fontFamily: "'DM Mono', monospace",
-                          }}>W</button>
-                        <button
-                          onClick={() => removeRow(ex.name, idx)}
-                          title="Remover esta linha"
-                          style={{
-                            width: 20, height: 20, borderRadius: 5, flexShrink: 0, cursor: "pointer", padding: 0,
-                            border: "1px solid transparent", background: "transparent",
-                            color: "#3f3f48", fontSize: 12, lineHeight: 1,
-                          }}>×</button>
-                      </div>
-                    );
-                  })}
-                </div>
-                <div style={{ display: "flex", gap: 8, marginTop: 6 }}>
-                  <button onClick={() => addRow(ex.name, true)} style={addRowBtn("#ffc46b")}>＋ aquecimento</button>
-                  <button onClick={() => addRow(ex.name, false)} style={addRowBtn("#555")}>＋ série</button>
-                </div>
-              </div>
             </div>
           );
         })}
@@ -916,16 +947,11 @@ function MediaPreview({ mediaUrl, p }) {
   );
 }
 
-const chip = (color) => ({
-  fontFamily: "'DM Mono', monospace", fontSize: 11, color,
-  background: color + "18", border: `1px solid ${color}44`, borderRadius: 6, padding: "3px 8px",
-});
-
-const playBtn = (color) => ({
-  marginLeft: 6, background: color + "22", border: `1px solid ${color}55`, color,
-  borderRadius: 5, width: 22, height: 20, fontSize: 9, lineHeight: 1,
+const playBtn = (c) => ({
+  flexShrink: 0, background: tint(c, 0x22), border: `1px solid ${tint(c, 0x55)}`, color: c,
+  borderRadius: 5, width: 24, height: 22, fontSize: 9, lineHeight: 1,
   display: "inline-flex", alignItems: "center", justifyContent: "center",
-  cursor: "pointer", verticalAlign: "middle", padding: 0,
+  cursor: "pointer", padding: 0,
 });
 
 /* =================== BARRA DO TIMER =================== */
@@ -948,7 +974,7 @@ function RestTimerBar({ timer, p, muted, onToggleMute, onPauseResume, onAdjust, 
         }} />
       </div>
 
-      <div style={{ maxWidth: 780, margin: "0 auto", padding: "10px 16px", display: "flex", alignItems: "center", gap: 10 }}>
+      <div style={{ maxWidth: 780, margin: "0 auto", padding: "10px 16px calc(10px + env(safe-area-inset-bottom))", display: "flex", alignItems: "center", gap: 10 }}>
         {/* Info */}
         <div style={{ flex: 1, minWidth: 0 }}>
           <div style={{ fontSize: 9, color: "#666", textTransform: "uppercase", letterSpacing: "0.08em", fontFamily: "'DM Mono', monospace" }}>
@@ -1255,18 +1281,19 @@ const fullInput = {
 };
 const label = { color: "#555", fontSize: 9, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 2 };
 const dateInput = {
-  background: "rgba(255,255,255,0.05)", border: "1px solid #2a2a35", borderRadius: 8,
-  padding: "10px 12px", color: "#f0eee8", fontSize: 13, colorScheme: "dark",
+  height: 36, padding: "0 8px", boxSizing: "border-box",
+  background: color.surface2, border: `1px solid ${color.line}`, borderRadius: radius.md,
+  color: color.text, fontSize: 12, fontFamily: font.mono, colorScheme: "dark",
 };
-const miniInput = {
-  background: "rgba(255,255,255,0.05)", border: "1px solid #2a2a35", borderRadius: 7,
-  padding: "8px 10px", color: "#f0eee8", fontSize: 13, width: 72, textAlign: "center",
-  fontFamily: "'DM Mono', monospace",
+// Grade da linha de série: [✓] [kg] × [reps] [aq] [×] — larguras iguais em todas as linhas
+const setGrid = {
+  display: "grid", gridTemplateColumns: "40px minmax(0,1fr) 14px minmax(0,1fr) 40px 28px",
+  gap: 6, alignItems: "center",
 };
-const addRowBtn = (color) => ({
-  background: "transparent", border: `1px dashed ${color}55`, borderRadius: 6,
-  padding: "4px 9px", color, fontSize: 10, cursor: "pointer",
-  fontFamily: "'DM Mono', monospace",
+const addRowBtn = (c) => ({
+  background: "transparent", border: `1px dashed ${tint(c, 0x66)}`, borderRadius: radius.sm,
+  height: 32, padding: "0 12px", color: c, fontSize: 11, cursor: "pointer",
+  fontFamily: font.mono,
 });
 const saveBtn = (p) => ({
   width: "100%", background: `linear-gradient(135deg, ${p.color}, ${p.accent})`, border: "none",
