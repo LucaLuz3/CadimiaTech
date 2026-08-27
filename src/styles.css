@@ -1,21 +1,21 @@
-@import url('https://fonts.googleapis.com/css2?family=DM+Sans:ital,wght@0,300;0,400;0,500;0,600;1,400&family=DM+Mono:wght@400;500&family=Bebas+Neue&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=DM+Mono:wght@400;500&display=swap');
 
 * { box-sizing: border-box; margin: 0; padding: 0; }
 
 html, body, #root {
   min-height: 100%;
-  background: #0d0d12;
+  background: #131211;
 }
 
 body {
-  font-family: 'DM Sans', sans-serif;
+  font-family: 'Inter', system-ui, -apple-system, sans-serif;
   -webkit-font-smoothing: antialiased;
-  color: #f0eee8;
+  color: #f2efe9;
 }
 
 ::-webkit-scrollbar { width: 4px; height: 4px; }
-::-webkit-scrollbar-track { background: #1a1a22; }
-::-webkit-scrollbar-thumb { background: #444; border-radius: 2px; }
+::-webkit-scrollbar-track { background: #1a1917; }
+::-webkit-scrollbar-thumb { background: #3a3733; border-radius: 2px; }
 
 .hover-lift { transition: all 0.2s ease; cursor: pointer; }
 .hover-lift:hover { transform: translateY(-2px); }
@@ -28,12 +28,17 @@ body {
   cursor: pointer;
   background: none;
   border: none;
-  font-family: 'DM Sans', sans-serif;
+  font-family: inherit;
 }
 
-input, button, select, textarea { font-family: 'DM Sans', sans-serif; }
-
+input, button, select, textarea { font-family: inherit; }
 input:focus, textarea:focus { outline: none; }
+button:focus-visible, input:focus-visible, select:focus-visible {
+  outline: 2px solid #d97757; outline-offset: 2px;
+}
+
+/* Números tabulares: cargas e reps não "dançam" ao digitar */
+.num, input[type="number"] { font-variant-numeric: tabular-nums; }
 
 .fade-in { animation: fadeIn 0.35s ease; }
 @keyframes fadeIn { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
