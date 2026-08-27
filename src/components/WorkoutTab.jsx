@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo, useRef } from "react";
-import { font, color, space, radius, tap, tint, chip, chipMuted, numInput, iconBtn } from "../theme";
+import { font, color, space, radius, tap, tint, chip, chipAccent, numInput, iconBtn, microLabel } from "../theme";
 import {
   saveWorkoutLog, getWorkoutLogs, bestSet,
   updatePlanExercise, addPlanExercise, deactivatePlanExercise, swapPlanExercise,
@@ -27,18 +27,6 @@ const mmss = (s) => {
   const sec = Math.max(0, s) % 60;
   return `${m}:${String(sec).padStart(2, "0")}`;
 };
-
-const RIRBadge = ({ rir, color }) => (
-  <span style={{
-    background: color + "22",
-    border: `1px solid ${color}44`,
-    borderRadius: "4px",
-    padding: "2px 8px",
-    fontSize: "11px",
-    fontFamily: "'DM Mono', monospace",
-    color: color,
-  }}>{rir}</span>
-);
 
 /* ---------- Mídia de execução ----------
    media_url do catálogo aceita:
@@ -550,50 +538,43 @@ export default function WorkoutTab({ who, p, catalog = [], exLoading = false, on
 
   return (
     <div className="fade-in">
-      {/* ===== Cabeçalho compacto: seletor A/B/C + faixa do treino ===== */}
-      <div style={{
-        background: color.surface, border: `1px solid ${color.lineSoft}`,
-        borderRadius: radius.lg, padding: space.sm, marginBottom: space.md,
-      }}>
-        <div role="tablist" aria-label="Dia de treino" style={{
-          display: "grid", gridTemplateColumns: `repeat(${p.days.length}, 1fr)`,
-          gap: 4, padding: 3, background: "rgba(0,0,0,0.35)", borderRadius: radius.md,
-        }}>
-          {p.days.map((d) => {
-            const on = activeDay === d.id;
-            return (
-              <button key={d.id} role="tab" aria-selected={on} onClick={() => setActiveDay(d.id)} style={{
-                height: 40, border: "none", cursor: "pointer", borderRadius: radius.sm,
-                background: on ? `linear-gradient(135deg, ${tint(p.color, 0xcc)}, ${tint(p.color, 0x88)})` : "transparent",
-                color: on ? "#fff" : color.text4, fontFamily: font.display, fontSize: 22, letterSpacing: "0.06em",
-                transition: "background 0.2s, color 0.2s",
-              }}>{d.id}</button>
-            );
-          })}
-        </div>
+      {/* ===== Cabeçalho: título do dia + seletor A/B/C ===== */}
+      <div style={{ padding: `${space.sm}px ${space.xs}px ${space.md}px` }}>
+        <h1 style={{ fontFamily: font.head, fontWeight: 700, fontSize: 28, letterSpacing: "-0.02em", lineHeight: 1.1, margin: 0 }}>
+          Treino {day.id}
+        </h1>
+        <div style={{ fontSize: 13, color: color.text2, marginTop: 4 }}>{day.theme}</div>
 
-        <div style={{ display: "flex", alignItems: "center", gap: space.sm, padding: `${space.md}px ${space.xs}px 4px` }}>
-          <div style={{ flex: 1, minWidth: 0 }}>
-            <div style={{ fontFamily: font.display, fontSize: 22, color: p.accent, letterSpacing: "0.05em", lineHeight: 1 }}>
-              TREINO {day.id}
-            </div>
-            <div style={{ fontSize: 12, color: color.text2, marginTop: 3, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
-              {day.theme}
-            </div>
+        <div style={{ display: "flex", alignItems: "center", gap: space.sm, marginTop: space.md }}>
+          <div role="tablist" aria-label="Dia de treino" style={{
+            display: "inline-flex", gap: 2, padding: 3,
+            background: color.surface2, borderRadius: radius.md,
+          }}>
+            {p.days.map((d) => {
+              const on = activeDay === d.id;
+              return (
+                <button key={d.id} role="tab" aria-selected={on} onClick={() => setActiveDay(d.id)} style={{
+                  width: 40, height: 32, border: "none", cursor: "pointer", borderRadius: radius.sm,
+                  background: on ? color.accent : "transparent",
+                  color: on ? color.onAccent : color.text3,
+                  fontFamily: font.head, fontWeight: 600, fontSize: 13,
+                  transition: "background 0.18s, color 0.18s",
+                }}>{d.id}</button>
+              );
+            })}
           </div>
           <input type="date" value={date} max={today()} onChange={(e) => setDate(e.target.value)}
-            aria-label="Data do treino" style={dateInput} />
+            aria-label="Data do treino" style={{ ...dateInput, marginLeft: "auto" }} />
           <button
             onClick={() => { setEditMode((v) => !v); setEditing(null); }}
-            className="hover-lift"
             aria-pressed={editMode}
             title={editMode ? "Concluir edição do plano" : "Editar plano"}
-            style={iconBtn(p.color, editMode)}>
+            style={iconBtn(editMode)}>
             {editMode ? "✓" : "✎"}
           </button>
         </div>
         {editMode && (
-          <div style={{ fontSize: 11, color: color.text3, padding: `0 ${space.xs}px ${space.xs}px` }}>
+          <div style={{ fontSize: 11, color: color.text3, marginTop: space.sm }}>
             Modo edição: reordene com ▲▼, ✎ para alterar, 🗑 para remover. Toque em ✓ para concluir.
           </div>
         )}
@@ -619,11 +600,9 @@ export default function WorkoutTab({ who, p, catalog = [], exLoading = false, on
           return (
             <div key={exId} className="ex-card" style={{
               background: open ? color.surface2 : color.surface,
-              borderTop: `1px solid ${open ? tint(p.color, 0x66) : color.lineSoft}`,
-              borderRight: `1px solid ${open ? tint(p.color, 0x66) : color.lineSoft}`,
-              borderBottom: `1px solid ${open ? tint(p.color, 0x66) : color.lineSoft}`,
-              borderLeft: `3px solid ${ex.priority ? p.color : (complete ? color.success : "transparent")}`,
+              border: `1px solid ${open ? color.accentLine : color.hair}`,
               borderRadius: radius.lg,
+              boxShadow: open ? "0 8px 30px rgba(0,0,0,0.35)" : "none",
               transition: "background 0.2s, border-color 0.2s",
             }}>
               {/* ---- Linha de cabeçalho (sempre visível; toca para abrir/fechar) ---- */}
@@ -638,27 +617,30 @@ export default function WorkoutTab({ who, p, catalog = [], exLoading = false, on
                   padding: `${space.sm + 2}px ${space.md}px`, minHeight: 48, cursor: editMode ? "default" : "pointer",
                 }}>
                 <span style={{
-                  width: 24, height: 24, borderRadius: radius.sm, flexShrink: 0,
+                  width: 26, height: 26, borderRadius: radius.sm, flexShrink: 0,
                   display: "flex", alignItems: "center", justifyContent: "center",
-                  background: complete ? tint(color.success, 0x22) : (ex.priority ? tint(p.color, 0x44) : color.surface2),
-                  color: complete ? color.success : (ex.priority ? p.accent : color.text4),
-                  fontSize: 10, fontFamily: font.mono, fontWeight: 600,
+                  background: complete ? tint(color.success, 0x22) : (ex.priority ? color.accentSoft : color.bg),
+                  color: complete ? color.success : (ex.priority ? color.accent : color.text3),
+                  fontSize: 12, fontFamily: font.num, fontWeight: 600,
                 }}>{complete ? "✓" : i + 1}</span>
 
                 <div style={{ flex: 1, minWidth: 0 }}>
                   <div style={{ display: "flex", alignItems: "center", gap: 6, minWidth: 0 }}>
                     <span style={{
-                      fontWeight: 600, fontSize: 14, color: open ? color.text : color.text2,
+                      fontFamily: font.head, fontWeight: 600, fontSize: 15, letterSpacing: "-0.01em",
+                      color: open ? color.text : color.text2,
                       whiteSpace: open ? "normal" : "nowrap", overflow: "hidden", textOverflow: "ellipsis",
                     }}>{ex.name}</span>
                     {ex.mediaUrl && !editMode && (
                       <button onClick={(e) => { e.stopPropagation(); setViewing(ex); }}
                         title="Ver execução" aria-label={`Ver execução de ${ex.name}`}
-                        className="hover-lift" style={playBtn(p.color)}>▶</button>
+                        style={playBtn}>
+                        <svg viewBox="0 0 24 24" width="11" height="11" fill="currentColor"><path d="M8 5v14l11-7z" /></svg>
+                      </button>
                     )}
                   </div>
                   {!open && (
-                    <div style={{ fontFamily: font.mono, fontSize: 10, color: color.text4, marginTop: 2, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                    <div style={{ fontFamily: font.num, fontSize: 12, color: color.text3, marginTop: 2, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
                       {ex.sets} × {ex.reps} · {mmss(restSecs)}{ex.priority ? " · prioridade" : ""}
                     </div>
                   )}
@@ -668,46 +650,50 @@ export default function WorkoutTab({ who, p, catalog = [], exLoading = false, on
                   <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
                     <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
                       <button onClick={() => moveEx(orderedExercises, i, -1)} disabled={i === 0 || reordering}
-                        title="Mover para cima" style={arrowBtn(p.color, i === 0 || reordering)}>▲</button>
+                        title="Mover para cima" style={arrowBtn( i === 0 || reordering)}>▲</button>
                       <button onClick={() => moveEx(orderedExercises, i, +1)} disabled={i === orderedExercises.length - 1 || reordering}
-                        title="Mover para baixo" style={arrowBtn(p.color, i === orderedExercises.length - 1 || reordering)}>▼</button>
+                        title="Mover para baixo" style={arrowBtn( i === orderedExercises.length - 1 || reordering)}>▼</button>
                     </div>
-                    <button onClick={() => openEdit(ex)} title="Editar exercício" className="hover-lift" style={miniActionBtn(p.color)}>✎</button>
+                    <button onClick={() => openEdit(ex)} title="Editar exercício" className="hover-lift" style={miniActionBtn(color.accent)}>✎</button>
                     <button onClick={() => removeEx(ex)} title="Remover do plano" className="hover-lift" style={miniActionBtn(color.danger)}>🗑</button>
                   </div>
                 ) : (
                   <div style={{ display: "flex", alignItems: "center", gap: space.sm, flexShrink: 0 }}>
                     <SetProgress done={doneSets} total={totalSets} />
-                    {open && <RIRBadge rir={ex.rir} color={p.color} />}
                   </div>
                 )}
               </div>
 
               {/* ---- Corpo (só do exercício aberto) ---- */}
               {open && (
-                <div style={{ padding: `0 ${space.md}px ${space.md}px`, borderTop: `1px solid ${color.lineSoft}` }}>
+                <div style={{ padding: `0 ${space.md}px ${space.md}px`, borderTop: `1px solid ${color.hair}` }}>
                   {/* Prescrição em chips + ação principal (descanso) */}
                   <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap", paddingTop: space.md }}>
-                    <span style={chip(p.accent)}>{ex.sets} × {ex.reps}</span>
-                    {pr && <span style={chip(p.accent)} title="Melhor série registrada">🏆 {pr.weight} × {pr.reps}</span>}
-                    {last && <span style={chipMuted} title="Último treino salvo">último {fmtShort(last.date)}</span>}
+                    <span style={chipAccent}>{ex.sets} × {ex.reps}</span>
+                    {ex.rir && <span style={chipAccent}>{ex.rir}</span>}
+                    {pr && <span style={chip} title="Melhor série registrada">PR {pr.weight} × {pr.reps}</span>}
                     <button
                       onClick={() => startRest(restSecs, ex.name, totalSets)}
                       className="hover-lift"
                       title={`Iniciar descanso de ${mmss(restSecs)} — marca a próxima série ao zerar`}
                       style={{
-                        marginLeft: "auto", height: 34, padding: "0 12px", cursor: "pointer",
-                        display: "inline-flex", alignItems: "center", gap: 6,
-                        background: isResting ? tint(p.color, 0x44) : `linear-gradient(135deg, ${tint(p.color, 0x55)}, ${tint(p.color, 0x33)})`,
-                        border: `1px solid ${isResting ? p.color : tint(p.color, 0x77)}`,
-                        borderRadius: radius.md, color: "#fff",
-                        fontFamily: font.mono, fontSize: 13, fontWeight: 600,
+                        marginLeft: "auto", height: 38, padding: "0 14px", cursor: "pointer",
+                        display: "inline-flex", alignItems: "center", gap: 7,
+                        background: isResting ? color.accentSoft : color.accent,
+                        border: `1px solid ${isResting ? color.accent : "transparent"}`,
+                        borderRadius: radius.md, color: isResting ? color.accent : color.onAccent,
+                        fontFamily: font.num, fontSize: 14, fontWeight: 600,
                       }}>
                       ⏱ {mmss(restSecs)}
                     </button>
                   </div>
-                  {ex.muscles && <div style={{ fontSize: 11, color: color.text3, marginTop: space.sm }}>{ex.muscles}</div>}
-                  {ex.note && <div style={{ fontSize: 11, color: color.text3, fontStyle: "italic", marginTop: 4 }}>💡 {ex.note}</div>}
+                  {(ex.muscles || ex.note) && (
+                    <div style={{ fontSize: 12, color: color.text3, lineHeight: 1.5, marginTop: space.sm }}>
+                      {ex.muscles}
+                      {ex.muscles && ex.note ? " · " : ""}
+                      {ex.note && <span style={{ color: color.text2 }}>{ex.note}</span>}
+                    </div>
+                  )}
 
                   {/* Séries: grade fixa [✓] [kg] × [reps] [aq] [×] */}
                   <div style={{ display: "flex", flexDirection: "column", gap: 6, marginTop: space.md }}>
@@ -725,15 +711,15 @@ export default function WorkoutTab({ who, p, catalog = [], exLoading = false, on
                             title={isDone ? "Marcar como não feita" : "Marcar como feita"}
                             style={{
                               height: tap, borderRadius: radius.md, cursor: "pointer", padding: 0,
-                              border: `1px solid ${isDone ? color.success : (isW ? tint(color.warn, 0x66) : color.line)}`,
-                              background: isDone ? tint(color.success, 0x22) : "transparent",
+                              border: `1px solid ${isDone ? color.success : (isW ? tint(color.warn, 0x66) : color.hair)}`,
+                              background: isDone ? tint(color.success, 0x1f) : "transparent",
                               color: isDone ? color.success : (isW ? color.warn : color.text3),
-                              fontSize: isW ? 10 : 12, fontFamily: font.mono, fontWeight: 600,
+                              fontSize: isW ? 11 : 13, fontFamily: font.num, fontWeight: 600,
                               display: "flex", alignItems: "center", justifyContent: "center",
                             }}>{isDone ? "✓" : (isW ? "aq" : workIdx + 1)}</button>
                           <input type="number" inputMode="decimal" placeholder={holder ? String(holder.weight) : "kg"} aria-label="Carga em kg"
                             value={r.weight} onChange={(e) => setCell(ex.name, idx, "weight", e.target.value)} style={numInput} />
-                          <span style={{ color: color.text4, fontSize: 12, textAlign: "center" }}>×</span>
+                          <span style={{ color: color.text3, fontSize: 12, textAlign: "center" }}>×</span>
                           <input type="number" inputMode="numeric" placeholder={holder ? String(holder.reps) : "reps"} aria-label="Repetições"
                             value={r.reps} onChange={(e) => setCell(ex.name, idx, "reps", e.target.value)} style={numInput} />
                           <button
@@ -742,15 +728,15 @@ export default function WorkoutTab({ who, p, catalog = [], exLoading = false, on
                             title={isW ? "Aquecimento: não conta como volume nem PR. Toque para virar série de trabalho." : "Marcar como aquecimento"}
                             style={{
                               height: tap, borderRadius: radius.md, cursor: "pointer", padding: 0,
-                              border: `1px solid ${isW ? color.warn : color.line}`,
-                              background: isW ? tint(color.warn, 0x1f) : "transparent",
-                              color: isW ? color.warn : color.text5, fontSize: 10, fontFamily: font.mono,
+                              border: `1px solid ${isW ? color.warn : color.hair}`,
+                              background: isW ? tint(color.warn, 0x1a) : "transparent",
+                              color: isW ? color.warn : color.text3, fontSize: 11, fontFamily: font.num,
                             }}>aq</button>
                           {removable ? (
                             <button onClick={() => removeRow(ex.name, idx)} title="Remover esta linha" aria-label="Remover linha" style={{
                               height: tap, borderRadius: radius.md, cursor: "pointer", padding: 0,
                               border: "1px solid transparent", background: "transparent",
-                              color: color.text5, fontSize: 16, lineHeight: 1,
+                              color: color.text3, fontSize: 16, lineHeight: 1,
                             }}>×</button>
                           ) : <span />}
                         </div>
@@ -772,8 +758,8 @@ export default function WorkoutTab({ who, p, catalog = [], exLoading = false, on
       {editMode && (
         <button onClick={openAdd} className="hover-lift" style={{
           width: "100%", marginTop: 10, padding: "12px",
-          background: "rgba(255,255,255,0.04)", border: `1px dashed ${p.color}66`,
-          borderRadius: 10, color: p.accent, fontSize: 13, cursor: "pointer",
+          background: "rgba(255,255,255,0.04)", border: `1px dashed ${color.accentLine}`,
+          borderRadius: 10, color: color.accent, fontSize: 13, cursor: "pointer",
         }}>＋ Adicionar exercício ao Treino {activeDay}</button>
       )}
 
@@ -792,10 +778,10 @@ export default function WorkoutTab({ who, p, catalog = [], exLoading = false, on
       )}
 
       {/* Mensagem + salvar */}
-      {loading && <div style={{ textAlign: "center", color: "#555", fontSize: 12, padding: 16 }}>Carregando histórico…</div>}
-      {msg && <div style={{ fontSize: 12, color: msg.startsWith("✅") ? "#7CFC9B" : "#ff9b9b", margin: "12px 0", textAlign: "center" }}>{msg}</div>}
-      <button onClick={save} disabled={saving} className="hover-lift" style={saveBtn(p)}>
-        {saving ? "Salvando…" : `💾 Salvar Treino ${activeDay}`}
+      {loading && <div style={{ textAlign: "center", color: color.text3, fontSize: 12, padding: 16 }}>Carregando histórico…</div>}
+      {msg && <div style={{ fontSize: 12, color: msg.startsWith("✅") ? color.success : color.danger, margin: "12px 0", textAlign: "center" }}>{msg}</div>}
+      <button onClick={save} disabled={saving} style={saveBtn}>
+        {saving ? "Salvando…" : `Salvar Treino ${activeDay}`}
       </button>
 
       {/* Espaçador para a barra do timer não cobrir o botão de salvar */}
@@ -842,7 +828,7 @@ function ExerciseMediaSheet({ ex, p, onClose }) {
   }, [onClose]);
 
   const src = frames[twoFrames ? frame : 0];
-  const captionMono = { fontFamily: "'DM Mono', monospace", fontSize: 10, color: "#777", letterSpacing: "0.06em", textTransform: "uppercase" };
+  const captionMono = { fontFamily: font.num, fontSize: 10, color: color.text3, letterSpacing: "0.06em", textTransform: "uppercase" };
 
   return (
     <div onClick={onClose} role="dialog" aria-modal="true" aria-label={`Execução: ${ex.name}`} style={{
@@ -852,23 +838,23 @@ function ExerciseMediaSheet({ ex, p, onClose }) {
     }}>
       <div onClick={(e) => e.stopPropagation()} style={{
         width: "100%", maxWidth: 520, maxHeight: "92vh", overflowY: "auto",
-        background: "#14141c", borderTop: `2px solid ${p.color}`,
+        background: color.surface2, borderTop: `2px solid ${color.accent}`,
         borderRadius: "18px 18px 0 0", padding: "16px 18px 28px",
       }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12, marginBottom: 12 }}>
           <div>
-            <div style={{ fontFamily: "'Bebas Neue', sans-serif", fontSize: 24, color: p.accent, letterSpacing: "0.05em", lineHeight: 1.1 }}>
+            <div style={{ fontFamily: font.head, fontSize: 24, color: color.accent, letterSpacing: "0.05em", lineHeight: 1.1 }}>
               {ex.name}
             </div>
-            {ex.muscles && <div style={{ fontSize: 11, color: "#888", marginTop: 2 }}>{ex.muscles}</div>}
+            {ex.muscles && <div style={{ fontSize: 11, color: color.text3, marginTop: 2 }}>{ex.muscles}</div>}
           </div>
-          <button onClick={onClose} aria-label="Fechar" style={{ background: "none", border: "none", color: "#888", fontSize: 22, cursor: "pointer", lineHeight: 1, padding: "0 2px" }}>✕</button>
+          <button onClick={onClose} aria-label="Fechar" style={{ background: "none", border: "none", color: color.text3, fontSize: 22, cursor: "pointer", lineHeight: 1, padding: "0 2px" }}>✕</button>
         </div>
 
         {/* Mídia */}
         <div style={{ position: "relative", background: "#fff", borderRadius: 12, overflow: "hidden" }}>
           {failed ? (
-            <div style={{ padding: 28, textAlign: "center", color: "#555", fontSize: 12, background: "#1a1a24" }}>
+            <div style={{ padding: 28, textAlign: "center", color: color.text3, fontSize: 12, background: color.surface }}>
               Não foi possível carregar a imagem. Confira a URL no modo ✎ Editar plano.
             </div>
           ) : (
@@ -882,7 +868,7 @@ function ExerciseMediaSheet({ ex, p, onClose }) {
           {twoFrames && !failed && (
             <div style={{ position: "absolute", left: 10, bottom: 10, display: "flex", gap: 6, alignItems: "center" }}>
               {frames.map((_, i) => (
-                <span key={i} style={{ width: 8, height: 8, borderRadius: 4, background: i === frame ? p.color : "rgba(0,0,0,0.25)" }} />
+                <span key={i} style={{ width: 8, height: 8, borderRadius: 4, background: i === frame ? color.accent : "rgba(0,0,0,0.25)" }} />
               ))}
             </div>
           )}
@@ -892,7 +878,7 @@ function ExerciseMediaSheet({ ex, p, onClose }) {
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 8 }}>
             <span style={captionMono}>{frame === 0 ? "Posição inicial" : "Posição final"} · toque para avançar</span>
             <button onClick={() => setPlaying((v) => !v)} style={{
-              background: "none", border: `1px solid ${p.color}55`, color: p.accent,
+              background: "none", border: `1px solid ${color.accentLine}`, color: color.accent,
               borderRadius: 7, padding: "3px 9px", fontSize: 11, cursor: "pointer",
             }}>{playing ? "⏸ Pausar" : "▶ Animar"}</button>
           </div>
@@ -900,21 +886,21 @@ function ExerciseMediaSheet({ ex, p, onClose }) {
 
         {/* Prescrição + instruções do catálogo */}
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 14 }}>
-          {ex.sets && ex.reps && <span style={chip(p.color)}>{ex.sets} × {ex.reps}</span>}
-          {ex.rest && <span style={chip(p.color)}>⏱ {ex.rest}</span>}
-          {ex.rir && <span style={chip(p.color)}>{ex.rir}</span>}
+          {ex.sets && ex.reps && <span style={chipAccent}>{ex.sets} × {ex.reps}</span>}
+          {ex.rest && <span style={chipAccent}>⏱ {ex.rest}</span>}
+          {ex.rir && <span style={chipAccent}>{ex.rir}</span>}
         </div>
-        {ex.note && <p style={{ fontSize: 12, color: "#bbb", lineHeight: 1.55, margin: "12px 0 0" }}>{ex.note}</p>}
+        {ex.note && <p style={{ fontSize: 12, color: color.text2, lineHeight: 1.55, margin: "12px 0 0" }}>{ex.note}</p>}
         {ex.tips && (
           <>
             <div style={{ ...captionMono, marginTop: 14, marginBottom: 4 }}>Dicas</div>
-            <p style={{ fontSize: 12, color: "#bbb", lineHeight: 1.55, margin: 0, whiteSpace: "pre-line" }}>{ex.tips}</p>
+            <p style={{ fontSize: 12, color: color.text2, lineHeight: 1.55, margin: 0, whiteSpace: "pre-line" }}>{ex.tips}</p>
           </>
         )}
         {ex.instructions && (
           <>
             <div style={{ ...captionMono, marginTop: 14, marginBottom: 4 }}>Execução</div>
-            <p style={{ fontSize: 12, color: "#bbb", lineHeight: 1.55, margin: 0, whiteSpace: "pre-line" }}>{ex.instructions}</p>
+            <p style={{ fontSize: 12, color: color.text2, lineHeight: 1.55, margin: 0, whiteSpace: "pre-line" }}>{ex.instructions}</p>
           </>
         )}
       </div>
@@ -929,7 +915,7 @@ function MediaPreview({ mediaUrl, p }) {
   useEffect(() => { setBroken({}); }, [mediaUrl]);
   if (frames.length === 0) {
     return (
-      <div style={{ fontSize: 10, color: "#666", lineHeight: 1.5, margin: "-6px 0 12px" }}>
+      <div style={{ fontSize: 10, color: color.text3, lineHeight: 1.5, margin: "-6px 0 12px" }}>
         Sem imagem. Cole a URL de um GIF, ou de duas fotos (inicial|final) separadas por “|”.
       </div>
     );
@@ -937,9 +923,9 @@ function MediaPreview({ mediaUrl, p }) {
   return (
     <div style={{ display: "flex", gap: 8, margin: "-4px 0 12px" }}>
       {frames.slice(0, 2).map((u, i) => (
-        <div key={i} style={{ width: 96, height: 72, borderRadius: 8, overflow: "hidden", background: "#fff", border: `1px solid ${p.color}33`, flexShrink: 0 }}>
+        <div key={i} style={{ width: 96, height: 72, borderRadius: 8, overflow: "hidden", background: "#fff", border: `1px solid ${color.hair}`, flexShrink: 0 }}>
           {broken[i]
-            ? <div style={{ height: "100%", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 10, color: "#a33", background: "#1a1a24", textAlign: "center", padding: 4 }}>não carregou</div>
+            ? <div style={{ height: "100%", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 10, color: "#a33", background: color.surface, textAlign: "center", padding: 4 }}>não carregou</div>
             : <img src={u} alt="" onError={() => setBroken((b) => ({ ...b, [i]: true }))} style={{ width: "100%", height: "100%", objectFit: "contain", display: "block" }} />}
         </div>
       ))}
@@ -947,12 +933,11 @@ function MediaPreview({ mediaUrl, p }) {
   );
 }
 
-const playBtn = (c) => ({
-  flexShrink: 0, background: tint(c, 0x22), border: `1px solid ${tint(c, 0x55)}`, color: c,
-  borderRadius: 5, width: 24, height: 22, fontSize: 9, lineHeight: 1,
+const playBtn = {
+  flexShrink: 0, background: color.accentSoft, border: "none", color: color.accent,
+  borderRadius: radius.sm, width: 24, height: 24, padding: 0, cursor: "pointer",
   display: "inline-flex", alignItems: "center", justifyContent: "center",
-  cursor: "pointer", padding: 0,
-});
+};
 
 /* =================== BARRA DO TIMER =================== */
 function RestTimerBar({ timer, p, muted, onToggleMute, onPauseResume, onAdjust, onStop }) {
@@ -961,15 +946,15 @@ function RestTimerBar({ timer, p, muted, onToggleMute, onPauseResume, onAdjust, 
 
   return (
     <div style={{
-      position: "fixed", left: 0, right: 0, bottom: 0, zIndex: 50,
-      background: "rgba(17,17,24,0.96)", backdropFilter: "blur(10px)",
-      borderTop: `2px solid ${done ? "#7CFC9B" : p.color}`,
+      position: "fixed", left: 0, right: 0, bottom: 64, zIndex: 50,
+      background: "rgba(19,18,17,0.96)", backdropFilter: "blur(14px)",
+      borderTop: `1px solid ${done ? color.success : color.accentLine}`,
     }}>
       {/* Barra de progresso */}
       <div style={{ height: 3, background: "rgba(255,255,255,0.06)" }}>
         <div style={{
           height: "100%", width: `${done ? 100 : pct}%`,
-          background: done ? "#7CFC9B" : `linear-gradient(90deg, ${p.color}, ${p.accent})`,
+          background: done ? color.success : color.accent,
           transition: "width 0.25s linear",
         }} />
       </div>
@@ -977,19 +962,19 @@ function RestTimerBar({ timer, p, muted, onToggleMute, onPauseResume, onAdjust, 
       <div style={{ maxWidth: 780, margin: "0 auto", padding: "10px 16px calc(10px + env(safe-area-inset-bottom))", display: "flex", alignItems: "center", gap: 10 }}>
         {/* Info */}
         <div style={{ flex: 1, minWidth: 0 }}>
-          <div style={{ fontSize: 9, color: "#666", textTransform: "uppercase", letterSpacing: "0.08em", fontFamily: "'DM Mono', monospace" }}>
+          <div style={microLabel}>
             {done ? "Descanso concluído · série ✓" : "Descansando"}
           </div>
-          <div style={{ fontSize: 12, color: "#bbb", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+          <div style={{ fontSize: 12, color: color.text2, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
             {timer.label}
           </div>
         </div>
 
         {/* Tempo */}
         <div style={{
-          fontFamily: "'Bebas Neue', sans-serif", fontSize: 38, lineHeight: 1,
-          color: done ? "#7CFC9B" : p.accent, letterSpacing: "0.02em",
-          minWidth: 78, textAlign: "center",
+          fontFamily: font.num, fontWeight: 600, fontSize: 34, lineHeight: 1,
+          color: done ? color.success : color.accent, letterSpacing: "-0.02em",
+          minWidth: 76, textAlign: "center",
         }}>
           {done ? "✓" : mmss(timer.remaining)}
         </div>
@@ -999,7 +984,7 @@ function RestTimerBar({ timer, p, muted, onToggleMute, onPauseResume, onAdjust, 
           {!done && (
             <>
               <CtrlBtn onClick={() => onAdjust(-30)} title="-30s">−30</CtrlBtn>
-              <CtrlBtn onClick={onPauseResume} title={timer.running ? "Pausar" : "Continuar"} accent={p.color}>
+              <CtrlBtn onClick={onPauseResume} title={timer.running ? "Pausar" : "Continuar"} accent={color.accent}>
                 {timer.running ? "⏸" : "▶"}
               </CtrlBtn>
               <CtrlBtn onClick={() => onAdjust(30)} title="+30s">+30</CtrlBtn>
@@ -1007,7 +992,7 @@ function RestTimerBar({ timer, p, muted, onToggleMute, onPauseResume, onAdjust, 
             </>
           )}
           {done && (
-            <CtrlBtn onClick={() => onAdjust(60)} title="Mais 1 min" accent={p.color}>＋1:00</CtrlBtn>
+            <CtrlBtn onClick={() => onAdjust(60)} title="Mais 1 min" accent={color.accent}>＋1:00</CtrlBtn>
           )}
           <CtrlBtn onClick={onStop} title="Encerrar">✕</CtrlBtn>
         </div>
@@ -1021,9 +1006,9 @@ function CtrlBtn({ children, onClick, title, accent }) {
     <button onClick={onClick} title={title} className="hover-lift" style={{
       minWidth: 38, height: 38, padding: "0 8px",
       background: accent ? accent + "33" : "rgba(255,255,255,0.06)",
-      border: `1px solid ${accent ? accent : "#2a2a35"}`,
-      borderRadius: 9, color: "#f0eee8", fontSize: 13, cursor: "pointer",
-      fontFamily: "'DM Mono', monospace", display: "flex", alignItems: "center", justifyContent: "center",
+      border: `1px solid ${accent ? accent : color.hair}`,
+      borderRadius: 9, color: color.text, fontSize: 13, cursor: "pointer",
+      fontFamily: font.num, display: "flex", alignItems: "center", justifyContent: "center",
     }}>{children}</button>
   );
 }
@@ -1037,12 +1022,12 @@ function SetProgress({ done, total }) {
         {Array.from({ length: total }).map((_, i) => (
           <span key={i} style={{
             width: 7, height: 7, borderRadius: "50%",
-            background: i < done ? "#7CFC9B" : "rgba(255,255,255,0.12)",
+            background: i < done ? color.success : "rgba(255,255,255,0.12)",
             transition: "background 0.2s",
           }} />
         ))}
       </div>
-      <span style={{ fontFamily: "'DM Mono', monospace", fontSize: 10, color: complete ? "#7CFC9B" : "#888" }}>
+      <span style={{ fontFamily: font.num, fontSize: 10, color: complete ? color.success : "#888" }}>
         {done}/{total}
       </span>
     </div>
@@ -1087,21 +1072,21 @@ function ExerciseEditor({ editing, setEditing, p, dayId, saving, catalog, exclud
         onClick={(e) => e.stopPropagation()}
         style={{
           width: "100%", maxWidth: 460, maxHeight: "90vh", overflowY: "auto",
-          background: "#14141c", border: `1px solid ${p.color}55`,
+          background: color.surface2, border: `1px solid ${color.accentLine}`,
           borderRadius: 16, padding: "22px 20px",
         }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
-          <span style={{ fontFamily: "'Bebas Neue', sans-serif", fontSize: 22, color: p.accent, letterSpacing: "0.05em" }}>
+          <span style={{ fontFamily: font.head, fontSize: 22, color: color.accent, letterSpacing: "0.05em" }}>
             {isAdd ? `ADICIONAR · TREINO ${dayId}` : "EDITAR EXERCÍCIO"}
           </span>
-          <button onClick={onClose} style={{ background: "none", border: "none", color: "#888", fontSize: 20, cursor: "pointer" }}>✕</button>
+          <button onClick={onClose} style={{ background: "none", border: "none", color: color.text3, fontSize: 20, cursor: "pointer" }}>✕</button>
         </div>
 
         {/* ---------- SELETOR DE CATÁLOGO (adicionar OU trocar) ---------- */}
         {selecting && (
           <>
             {isEdit && (
-              <div style={{ fontSize: 10, color: "#777", marginBottom: 8, textTransform: "uppercase", letterSpacing: "0.06em" }}>
+              <div style={{ fontSize: 10, color: color.text3, marginBottom: 8, textTransform: "uppercase", letterSpacing: "0.06em" }}>
                 Trocar “{editing.name}” por:
               </div>
             )}
@@ -1115,10 +1100,10 @@ function ExerciseEditor({ editing, setEditing, p, dayId, saving, catalog, exclud
 
             <div style={{
               maxHeight: 200, overflowY: "auto", margin: "0 0 6px",
-              border: "1px solid #2a2a35", borderRadius: 10,
+              border: `1px solid ${color.hair}`, borderRadius: 10,
             }}>
               {options.length === 0 ? (
-                <div style={{ padding: "14px", fontSize: 12, color: "#666", textAlign: "center" }}>
+                <div style={{ padding: "14px", fontSize: 12, color: color.text3, textAlign: "center" }}>
                   {q ? "Nenhum exercício encontrado." : "Catálogo vazio."}
                 </div>
               ) : options.map((c) => {
@@ -1128,11 +1113,11 @@ function ExerciseEditor({ editing, setEditing, p, dayId, saving, catalog, exclud
                     display: "block", width: "100%", textAlign: "left", cursor: "pointer",
                     padding: "10px 12px", border: "none",
                     borderBottom: "1px solid rgba(255,255,255,0.05)",
-                    background: active ? p.color + "22" : "transparent",
-                    color: active ? p.accent : "#ddd",
+                    background: active ? color.accent + "22" : "transparent",
+                    color: active ? color.accent : "#ddd",
                   }}>
                     <div style={{ fontSize: 13, fontWeight: active ? 600 : 400 }}>{c.name}</div>
-                    {c.muscles && <div style={{ fontSize: 10, color: "#777", marginTop: 2 }}>{c.muscles}</div>}
+                    {c.muscles && <div style={{ fontSize: 10, color: color.text3, marginTop: 2 }}>{c.muscles}</div>}
                   </button>
                 );
               })}
@@ -1140,11 +1125,11 @@ function ExerciseEditor({ editing, setEditing, p, dayId, saving, catalog, exclud
 
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", paddingBottom: 14 }}>
               <button onClick={() => set("creatingNew", true)} style={{
-                background: "none", border: "none", color: p.accent, cursor: "pointer", fontSize: 12, padding: "4px 0",
+                background: "none", border: "none", color: color.accent, cursor: "pointer", fontSize: 12, padding: "4px 0",
               }}>＋ Criar exercício novo</button>
               {isEdit && (
                 <button onClick={() => { set("swapping", false); set("swapTargetId", null); }} style={{
-                  background: "none", border: "none", color: "#888", cursor: "pointer", fontSize: 12, padding: "4px 0",
+                  background: "none", border: "none", color: color.text3, cursor: "pointer", fontSize: 12, padding: "4px 0",
                 }}>← Cancelar troca</button>
               )}
             </div>
@@ -1154,7 +1139,7 @@ function ExerciseEditor({ editing, setEditing, p, dayId, saving, catalog, exclud
         {/* ---------- CRIAR NOVO NO CATÁLOGO (adicionar OU trocar) ---------- */}
         {creatingNew && (
           <>
-            <div style={{ fontSize: 10, color: "#777", marginBottom: 10, lineHeight: 1.5 }}>
+            <div style={{ fontSize: 10, color: color.text3, marginBottom: 10, lineHeight: 1.5 }}>
               Novo exercício no catálogo — fica disponível para os dois perfis.
             </div>
             <EditorField label="Nome">
@@ -1164,7 +1149,7 @@ function ExerciseEditor({ editing, setEditing, p, dayId, saving, catalog, exclud
               <input value={editing.newMuscles || ""} onChange={(e) => set("newMuscles", e.target.value)} style={fullInput} placeholder="Reto Abdominal" />
             </EditorField>
             <button onClick={() => set("creatingNew", false)} style={{
-              background: "none", border: "none", color: "#888", cursor: "pointer", fontSize: 12, padding: "0 0 14px",
+              background: "none", border: "none", color: color.text3, cursor: "pointer", fontSize: 12, padding: "0 0 14px",
             }}>← Escolher do catálogo existente</button>
           </>
         )}
@@ -1173,11 +1158,11 @@ function ExerciseEditor({ editing, setEditing, p, dayId, saving, catalog, exclud
         {showCatalogEdit && (
           <>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
-              <span style={{ fontSize: 10, color: "#777", textTransform: "uppercase", letterSpacing: "0.06em" }}>
+              <span style={{ fontSize: 10, color: color.text3, textTransform: "uppercase", letterSpacing: "0.06em" }}>
                 Catálogo · afeta todos os planos
               </span>
               <button onClick={() => set("swapping", true)} style={{
-                background: "none", border: `1px solid ${p.color}55`, color: p.accent,
+                background: "none", border: `1px solid ${color.accentLine}`, color: color.accent,
                 cursor: "pointer", fontSize: 11, padding: "4px 8px", borderRadius: 7,
               }}>🔄 Trocar exercício</button>
             </div>
@@ -1192,16 +1177,16 @@ function ExerciseEditor({ editing, setEditing, p, dayId, saving, catalog, exclud
                 placeholder="https://… (ou duas fotos: inicial|final)" inputMode="url" />
             </EditorField>
             <MediaPreview mediaUrl={editing.mediaUrl} p={p} />
-            <div style={{ height: 1, background: "#2a2a35", margin: "6px 0 16px" }} />
+            <div style={{ height: 1, background: color.hair, margin: "6px 0 16px" }} />
           </>
         )}
 
         {/* ---------- Prescrição do bloco ---------- */}
         {showPrescription && (
           <>
-            <div style={{ fontSize: 10, color: "#777", marginBottom: 8, textTransform: "uppercase", letterSpacing: "0.06em" }}>
+            <div style={{ fontSize: 10, color: color.text3, marginBottom: 8, textTransform: "uppercase", letterSpacing: "0.06em" }}>
               Prescrição neste dia
-              {selected && <span style={{ color: p.accent, textTransform: "none", letterSpacing: 0 }}> · {selected.name}</span>}
+              {selected && <span style={{ color: color.accent, textTransform: "none", letterSpacing: 0 }}> · {selected.name}</span>}
             </div>
 
             <div style={{ display: "flex", gap: 8 }}>
@@ -1226,24 +1211,24 @@ function ExerciseEditor({ editing, setEditing, p, dayId, saving, catalog, exclud
               <textarea value={editing.note || ""} onChange={(e) => set("note", e.target.value)} style={{ ...fullInput, minHeight: 56, resize: "vertical" }} placeholder="Pausa de 1s no topo…" />
             </EditorField>
 
-            <label style={{ display: "flex", alignItems: "center", gap: 8, margin: "4px 0 18px", cursor: "pointer", fontSize: 13, color: "#bbb" }}>
-              <input type="checkbox" checked={!!editing.priority} onChange={(e) => set("priority", e.target.checked)} style={{ width: 16, height: 16, accentColor: p.color }} />
+            <label style={{ display: "flex", alignItems: "center", gap: 8, margin: "4px 0 18px", cursor: "pointer", fontSize: 13, color: color.text2 }}>
+              <input type="checkbox" checked={!!editing.priority} onChange={(e) => set("priority", e.target.checked)} style={{ width: 16, height: 16, accentColor: color.accent }} />
               Marcar como prioridade
             </label>
           </>
         )}
 
         <div style={{ display: "flex", gap: 8 }}>
-          <button onClick={onClose} style={{ flex: 1, padding: "12px", background: "rgba(255,255,255,0.05)", border: "1px solid #2a2a35", borderRadius: 10, color: "#bbb", fontSize: 14, cursor: "pointer" }}>
+          <button onClick={onClose} style={{ flex: 1, padding: "12px", background: color.surface2, border: `1px solid ${color.hair}`, borderRadius: 10, color: color.text2, fontSize: 14, cursor: "pointer" }}>
             Cancelar
           </button>
-          <button onClick={onSave} disabled={saving} className="hover-lift" style={{ flex: 1, padding: "12px", background: `linear-gradient(135deg, ${p.color}, ${p.accent})`, border: "none", borderRadius: 10, color: "#0d0d12", fontWeight: 600, fontSize: 14, cursor: "pointer" }}>
+          <button onClick={onSave} disabled={saving} className="hover-lift" style={{ flex: 1, padding: "12px", background: color.accent, border: "none", borderRadius: 10, color: color.onAccent, fontWeight: 600, fontSize: 14, cursor: "pointer" }}>
             {saving ? "Salvando…" : (isAdd ? "Adicionar" : "Salvar")}
           </button>
         </div>
 
         {isEdit && !editing.swapping && (
-          <p style={{ fontSize: 10, color: "#555", marginTop: 14, lineHeight: 1.6 }}>
+          <p style={{ fontSize: 10, color: color.text3, marginTop: 14, lineHeight: 1.6 }}>
             Renomear é seguro: o histórico continua ligado a este exercício. Para substituir por um movimento diferente (ex.: prancha → abdominal), use “Trocar exercício” — cada um mantém o seu histórico.
           </p>
         )}
@@ -1261,29 +1246,29 @@ function EditorField({ label: lbl, flex, children }) {
   );
 }
 
-const miniActionBtn = (color) => ({
-  width: 30, height: 30, borderRadius: 8, padding: 0, cursor: "pointer",
-  background: color + "1a", border: `1px solid ${color}55`, color,
+const miniActionBtn = (c) => ({
+  width: 32, height: 32, borderRadius: radius.sm, padding: 0, cursor: "pointer",
+  background: tint(c, 0x1a), border: `1px solid ${tint(c, 0x55)}`, color: c,
   fontSize: 13, display: "flex", alignItems: "center", justifyContent: "center",
 });
-const arrowBtn = (color, disabled) => ({
-  width: 26, height: 18, borderRadius: 5, padding: 0,
+const arrowBtn = (disabled) => ({
+  width: 28, height: 18, borderRadius: 5, padding: 0,
   cursor: disabled ? "default" : "pointer",
-  background: disabled ? "rgba(255,255,255,0.03)" : color + "1a",
-  border: `1px solid ${disabled ? "#2a2a35" : color + "55"}`,
-  color: disabled ? "#3a3a45" : color,
+  background: disabled ? "transparent" : color.accentSoft,
+  border: `1px solid ${disabled ? color.hair : color.accentLine}`,
+  color: disabled ? color.text3 : color.accent,
   fontSize: 9, display: "flex", alignItems: "center", justifyContent: "center",
 });
 const fullInput = {
   width: "100%", boxSizing: "border-box",
-  background: "rgba(255,255,255,0.05)", border: "1px solid #2a2a35", borderRadius: 8,
-  padding: "10px 12px", color: "#f0eee8", fontSize: 13, fontFamily: "inherit",
+  background: color.surface2, border: `1px solid ${color.hair}`, borderRadius: 8,
+  padding: "10px 12px", color: color.text, fontSize: 13, fontFamily: "inherit",
 };
-const label = { color: "#555", fontSize: 9, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 2 };
+const label = { color: color.text3, fontSize: 9, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 2 };
 const dateInput = {
-  height: 36, padding: "0 8px", boxSizing: "border-box",
-  background: color.surface2, border: `1px solid ${color.line}`, borderRadius: radius.md,
-  color: color.text, fontSize: 12, fontFamily: font.mono, colorScheme: "dark",
+  height: 38, padding: "0 10px", boxSizing: "border-box",
+  background: color.surface2, border: `1px solid ${color.hair}`, borderRadius: radius.md,
+  color: color.text2, fontSize: 12, fontFamily: font.num, colorScheme: "dark",
 };
 // Grade da linha de série: [✓] [kg] × [reps] [aq] [×] — larguras iguais em todas as linhas
 const setGrid = {
@@ -1291,12 +1276,11 @@ const setGrid = {
   gap: 6, alignItems: "center",
 };
 const addRowBtn = (c) => ({
-  background: "transparent", border: `1px dashed ${tint(c, 0x66)}`, borderRadius: radius.sm,
-  height: 32, padding: "0 12px", color: c, fontSize: 11, cursor: "pointer",
-  fontFamily: font.mono,
+  background: "transparent", border: `1px dashed ${c === color.warn ? tint(color.warn, 0x59) : color.hair}`,
+  borderRadius: radius.md, height: 34, padding: "0 12px", color: c, fontSize: 12, cursor: "pointer",
 });
-const saveBtn = (p) => ({
-  width: "100%", background: `linear-gradient(135deg, ${p.color}, ${p.accent})`, border: "none",
-  borderRadius: 12, padding: "14px", color: "#0d0d12", fontWeight: 600, fontSize: 14,
-  cursor: "pointer", marginTop: 8,
-});
+const saveBtn = {
+  width: "100%", marginTop: space.lg, height: 50, cursor: "pointer",
+  background: color.accent, border: "none", borderRadius: radius.lg,
+  color: color.onAccent, fontFamily: font.head, fontWeight: 600, fontSize: 15,
+};
