@@ -16,6 +16,52 @@ import "./styles.css";
    o app entre uma série e outra e leva junto o que ainda não foi salvo.
    ============================================================ */
 
+/* Rede de segurança: sem isto, qualquer erro de render derruba a árvore
+   inteira e o usuário vê uma tela preta, sem uma palavra do que houve.
+   Foi exatamente o que aconteceu no primeiro deploy da F0 — um `day.id`
+   com `day` indefinido, e nenhuma pista na tela.
+
+   Um app usado no meio do treino não pode falhar em silêncio: ou mostra
+   o que quebrou, ou pelo menos oferece recarregar. */
+class Fronteira extends React.Component {
+  constructor(props) { super(props); this.state = { erro: null }; }
+  static getDerivedStateFromError(erro) { return { erro }; }
+  componentDidCatch(erro, info) { console.error("Erro de render:", erro, info); }
+
+  render() {
+    if (!this.state.erro) return this.props.children;
+    return (
+      <div style={{
+        minHeight: "100vh", background: color.bg, color: color.text,
+        display: "grid", placeItems: "center", padding: 24,
+      }}>
+        <div style={{
+          maxWidth: 420, background: color.surface, border: `1px solid ${color.hair}`,
+          borderRadius: radius.md, padding: 24, textAlign: "center",
+        }}>
+          <div style={{ fontSize: 17, fontWeight: 600, marginBottom: 10 }}>
+            Alguma coisa quebrou nesta tela
+          </div>
+          <p style={{ fontSize: 13.5, color: color.text2, lineHeight: 1.7, margin: "0 0 18px" }}>
+            Seus dados estão salvos — o problema é só de exibição. Recarregar
+            costuma resolver.
+          </p>
+          <pre style={{
+            textAlign: "left", fontSize: 11, color: color.text3, background: color.bg,
+            border: `1px solid ${color.hair}`, borderRadius: 8, padding: 10,
+            margin: "0 0 18px", overflowX: "auto", whiteSpace: "pre-wrap",
+          }}>{String(this.state.erro?.message || this.state.erro)}</pre>
+          <button onClick={() => window.location.reload()} style={{
+            width: "100%", height: tap, cursor: "pointer", background: color.accent,
+            border: "none", borderRadius: radius.md, color: color.onAccent,
+            fontSize: 15, fontWeight: 600,
+          }}>Recarregar</button>
+        </div>
+      </div>
+    );
+  }
+}
+
 function Raiz() {
   const [precisaAtualizar, setPrecisaAtualizar] = useState(false);
   const [atualizar, setAtualizar] = useState(null);
@@ -57,6 +103,8 @@ function Raiz() {
 
 ReactDOM.createRoot(document.getElementById("root")).render(
   <React.StrictMode>
-    <Raiz />
+    <Fronteira>
+      <Raiz />
+    </Fronteira>
   </React.StrictMode>
 );

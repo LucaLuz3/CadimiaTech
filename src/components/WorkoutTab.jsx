@@ -556,6 +556,38 @@ export default function WorkoutTab({ profileId, p, catalog = [], exLoading = fal
     setReordering(false);
   }
 
+  // Sem dias montados ainda. Acontece em dois momentos: enquanto os
+  // placements do banco não chegaram, e quando um perfil realmente não
+  // tem exercício nenhum no plano.
+  //
+  // Este guarda existe porque a versão anterior tinha um plano hardcoded
+  // em plans.js como fallback, então p.days NUNCA vinha vazio e o código
+  // abaixo pôde assumir `day` sempre definido. Ao tirar o fallback, o
+  // primeiro render passou a estourar em `day.id` e derrubava a árvore
+  // inteira — tela preta, sem mensagem. Precisa ficar DEPOIS de todos os
+  // hooks, senão quebra a regra dos hooks do React.
+  if (!day) {
+    return (
+      <div className="fade-in" style={{ padding: `${space.xl}px ${space.md}px`, textAlign: "center" }}>
+        {exLoading ? (
+          <div style={{ color: color.text3, fontSize: 13 }}>Carregando seu plano…</div>
+        ) : (
+          <div style={{
+            background: color.surface, border: `1px solid ${color.hair}`,
+            borderRadius: radius.md, padding: space.xl, color: color.text2, fontSize: 14, lineHeight: 1.7,
+          }}>
+            <div style={{ fontSize: 15, fontWeight: 600, color: color.text, marginBottom: 8 }}>
+              Nenhum exercício no plano ainda
+            </div>
+            {readOnly
+              ? "Esta pessoa ainda não montou o plano dela."
+              : "Assim que houver exercícios cadastrados nos dias A, B ou C, eles aparecem aqui."}
+          </div>
+        )}
+      </div>
+    );
+  }
+
   return (
     <div className="fade-in">
       {/* ===== Cabeçalho: título do dia + seletor A/B/C ===== */}
