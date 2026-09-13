@@ -1,97 +1,132 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from "recharts";
 import { measurementTypes } from "../data/plans";
 import {
   addBodyWeight, getBodyWeights, deleteBodyWeight,
   addMeasurement, getMeasurements, deleteMeasurement,
-  uploadPhoto, getPhotos, deletePhoto,
 } from "../lib/db";
+import { color, font, space, radius, tap, microLabel } from "../theme";
 
-const today = () => new Date().toISOString().slice(0, 10);
+/* ============================================================
+   Evolução — peso e medidas.
+
+   A sub-aba de FOTOS saiu no corte de escopo do V0 (13/09). Com ela
+   saiu toda a dependência de Storage no cliente. As 4 fotos existentes
+   continuam no banco; a feature volta depois, com política de dono
+   corrigida.
+
+   O peso ficou, e não por inércia: a média móvel exponencial do peso é
+   a entrada do motor de autorregulação da F1. Sem série histórica de
+   peso, metade do motor não tem o que ler.
+   ============================================================ */
+
+const hoje = () => new Date().toISOString().slice(0, 10);
 const fmt = (d) => new Date(d + "T00:00:00").toLocaleDateString("pt-BR", { day: "2-digit", month: "2-digit", year: "2-digit" });
-const fmtShort = (d) => new Date(d + "T00:00:00").toLocaleDateString("pt-BR", { day: "2-digit", month: "2-digit" });
+const fmtCurto = (d) => new Date(d + "T00:00:00").toLocaleDateString("pt-BR", { day: "2-digit", month: "2-digit" });
 
-export default function ProgressTab({ who, p }) {
+export default function ProgressTab({ profileId, p, readOnly = false }) {
   const [sub, setSub] = useState("peso");
-  const subs = [
-    ["peso", "⚖️ Peso"],
-    ["medidas", "📏 Medidas"],
-    ["fotos", "📸 Fotos"],
-  ];
+  const subs = [["peso", "Peso"], ["medidas", "Medidas"]];
 
   return (
     <div className="fade-in">
-      <div style={{ fontFamily: "'Bebas Neue', sans-serif", fontSize: 26, color: p.accent, letterSpacing: "0.05em", marginBottom: 14 }}>
-        EVOLUÇÃO — {p.name.toUpperCase()}
+      <div style={{ fontSize: 20, fontWeight: 700, letterSpacing: "-0.01em", marginBottom: 14 }}>
+        Evolução — {p.name}
       </div>
 
       <div style={{ display: "flex", gap: 6, marginBottom: 18, flexWrap: "wrap" }}>
-        {subs.map(([id, label]) => (
-          <button key={id} className="tab-btn" onClick={() => setSub(id)} style={{
-            background: sub === id ? p.color + "22" : "rgba(255,255,255,0.04)",
-            border: `1px solid ${sub === id ? p.color + "66" : "#2a2a35"}`,
-            borderRadius: 20, padding: "7px 14px", fontSize: 12,
-            color: sub === id ? p.accent : "#888", fontWeight: sub === id ? 600 : 400,
-          }}>{label}</button>
-        ))}
+        {subs.map(([id, label]) => {
+          const on = sub === id;
+          return (
+            <button key={id} onClick={() => setSub(id)} aria-pressed={on} style={{
+              background: on ? color.accentSoft : color.surface,
+              border: `1px solid ${on ? color.accentLine : color.hair}`,
+              borderRadius: radius.pill, padding: "7px 16px", fontSize: 12.5, cursor: "pointer",
+              color: on ? color.accent : color.text3, fontWeight: on ? 600 : 400,
+            }}>{label}</button>
+          );
+        })}
       </div>
 
-      <p style={{ fontSize: 11, color: "#555", marginBottom: 16, lineHeight: 1.6 }}>
-        💡 As cargas e repetições de cada treino agora são registradas direto na aba <strong style={{ color: "#888" }}>Treinos</strong>.
-      </p>
-
-      {sub === "peso" && <BodyWeight who={who} p={p} />}
-      {sub === "medidas" && <Measurements who={who} p={p} />}
-      {sub === "fotos" && <Photos who={who} p={p} />}
+      {sub === "peso" && <Peso profileId={profileId} readOnly={readOnly} />}
+      {sub === "medidas" && <Medidas profileId={profileId} readOnly={readOnly} />}
     </div>
   );
 }
 
-/* =================== PESO CORPORAL =================== */
-function BodyWeight({ who, p }) {
-  const [entries, setEntries] = useState([]);
-  const [weight, setWeight] = useState("");
-  const [date, setDate] = useState(today());
-  const [loading, setLoading] = useState(true);
+/* =================== PESO =================== */
 
-  async function refresh() {
-    setLoading(true);
-    try { setEntries(await getBodyWeights(who)); } catch (e) { console.error(e); }
-    setLoading(false);
+function Peso({ profileId, readOnly }) {
+  const [itens, setItens] = useState([]);
+  const [peso, setPeso] = useState("");
+  const [data, setData] = useState(hoje());
+  const [carregando, setCarregando] = useState(true);
+  const [erro, setErro] = useState("");
+
+  const recarregar = useCallback(async () => {
+    setCarregando(true);
+    try { setItens(await getBodyWeights(profileId)); setErro(""); }
+    catch (e) { setErro(e.message); }
+    finally { setCarregando(false); }
+  }, [profileId]);
+
+  useEffect(() => { recarregar(); }, [recarregar]);
+
+  async function adicionar() {
+    if (!peso) return;
+    try { await addBodyWeight({ date: data, weight: Number(peso) }); setPeso(""); recarregar(); }
+    catch (e) { setErro(e.message); }
   }
-  useEffect(() => { refresh(); }, [who]);
 
-  async function add() {
-    if (!weight) return;
-    await addBodyWeight({ person: who, date, weight: Number(weight) });
-    setWeight(""); refresh();
+  async function remover(id) {
+    try { await deleteBodyWeight(id); recarregar(); } catch (e) { setErro(e.message); }
   }
-  async function remove(id) { await deleteBodyWeight(id); refresh(); }
 
-  const chart = entries.map((e) => ({ date: fmtShort(e.date), peso: Number(e.weight) }));
-  const latest = entries[entries.length - 1];
-  const first = entries[0];
-  const delta = latest && first ? (latest.weight - first.weight).toFixed(1) : null;
+  const serie = itens.map((e) => ({ date: fmtCurto(e.date), peso: Number(e.weight) }));
+  const ultimo = itens[itens.length - 1];
+  const primeiro = itens[0];
+  const delta = ultimo && primeiro ? (Number(ultimo.weight) - Number(primeiro.weight)).toFixed(1) : null;
 
   return (
     <div>
-      <div style={{ display: "flex", gap: 8, marginBottom: 16, flexWrap: "wrap" }}>
-        <input type="number" inputMode="decimal" placeholder="Peso (kg)" value={weight}
-          onChange={(e) => setWeight(e.target.value)} style={{ ...dateInput, flex: 1, minWidth: 110 }} />
-        <input type="date" value={date} max={today()} onChange={(e) => setDate(e.target.value)} style={dateInput} />
-        <button onClick={add} className="hover-lift" style={addBtn(p)}>＋</button>
-      </div>
+      {!readOnly && (
+        <div style={{ display: "flex", gap: 8, marginBottom: 14, flexWrap: "wrap" }}>
+          <input type="number" inputMode="decimal" step="0.1" placeholder="Peso (kg)"
+            value={peso} onChange={(e) => setPeso(e.target.value)}
+            style={{ ...campo, flex: "1 1 120px" }} />
+          <input type="date" value={data} max={hoje()} onChange={(e) => setData(e.target.value)} style={campo} />
+          <button onClick={adicionar} style={botaoMais} aria-label="Adicionar peso">+</button>
+        </div>
+      )}
 
-      {loading ? <Loading /> : entries.length === 0 ? <Empty text="Nenhum registro de peso ainda." /> : (
+      {erro && <Erro texto={erro} />}
+
+      {carregando ? <Carregando /> : itens.length === 0 ? (
+        <Vazio>
+          <p style={{ margin: "0 0 8px" }}>Nenhuma pesagem registrada ainda.</p>
+          <p style={{ margin: 0, fontSize: 11.5, lineHeight: 1.7 }}>
+            Vale pesar pelo menos 4 vezes por semana, sempre no mesmo horário. O peso de um
+            dia isolado oscila 1–2 kg por hidratação e não diz nada — o que serve é a
+            tendência, e tendência precisa de série.
+          </p>
+        </Vazio>
+      ) : (
         <>
-          {delta !== null && (
-            <div style={{ display: "flex", gap: 14, marginBottom: 12, fontFamily: "'DM Mono', monospace", fontSize: 12 }}>
-              <span style={{ color: "#888" }}>Atual: <strong style={{ color: p.accent }}>{latest.weight}kg</strong></span>
-              <span style={{ color: Number(delta) <= 0 ? "#7CFC9B" : "#ffd166" }}>Δ {delta > 0 ? "+" : ""}{delta}kg</span>
-            </div>
-          )}
-          <Chart data={chart} dataKey="peso" color={p.color} unit="kg" />
-          <HistoryList items={entries} render={(e) => `${e.weight} kg`} onDelete={remove} accent={p.accent} />
+          <div style={{ display: "flex", gap: space.lg, marginBottom: 10, fontSize: 13, flexWrap: "wrap" }}>
+            <span style={{ color: color.text3 }}>
+              Atual <strong style={{ color: color.accent, fontFamily: font.num }}>{ultimo.weight} kg</strong>
+            </span>
+            {delta !== null && (
+              <span style={{ color: color.text3 }}>
+                Desde o início{" "}
+                <strong style={{ fontFamily: font.num, color: Number(delta) <= 0 ? color.success : color.text2 }}>
+                  {Number(delta) > 0 ? "+" : ""}{delta} kg
+                </strong>
+              </span>
+            )}
+          </div>
+          <Grafico dados={serie} chave="peso" unidade="kg" />
+          <Historico itens={itens} render={(e) => `${e.weight} kg`} onRemover={readOnly ? null : remover} />
         </>
       )}
     </div>
@@ -99,166 +134,154 @@ function BodyWeight({ who, p }) {
 }
 
 /* =================== MEDIDAS =================== */
-function Measurements({ who, p }) {
-  const [entries, setEntries] = useState([]);
-  const [type, setType] = useState(measurementTypes[0].key);
-  const [value, setValue] = useState("");
-  const [date, setDate] = useState(today());
-  const [loading, setLoading] = useState(true);
-  const [viewType, setViewType] = useState(measurementTypes[0].key);
 
-  async function refresh() {
-    setLoading(true);
-    try { setEntries(await getMeasurements(who)); } catch (e) { console.error(e); }
-    setLoading(false);
+function Medidas({ profileId, readOnly }) {
+  const [itens, setItens] = useState([]);
+  const [tipo, setTipo] = useState(measurementTypes[0].key);
+  const [valor, setValor] = useState("");
+  const [data, setData] = useState(hoje());
+  const [verTipo, setVerTipo] = useState(measurementTypes[0].key);
+  const [carregando, setCarregando] = useState(true);
+  const [erro, setErro] = useState("");
+
+  const recarregar = useCallback(async () => {
+    setCarregando(true);
+    try { setItens(await getMeasurements(profileId)); setErro(""); }
+    catch (e) { setErro(e.message); }
+    finally { setCarregando(false); }
+  }, [profileId]);
+
+  useEffect(() => { recarregar(); }, [recarregar]);
+
+  async function adicionar() {
+    if (!valor) return;
+    try { await addMeasurement({ date: data, type: tipo, value: Number(valor) }); setValor(""); recarregar(); }
+    catch (e) { setErro(e.message); }
   }
-  useEffect(() => { refresh(); }, [who]);
 
-  async function add() {
-    if (!value) return;
-    await addMeasurement({ person: who, date, type, value: Number(value) });
-    setValue(""); setViewType(type); refresh();
+  async function remover(id) {
+    try { await deleteMeasurement(id); recarregar(); } catch (e) { setErro(e.message); }
   }
-  async function remove(id) { await deleteMeasurement(id); refresh(); }
 
-  const filtered = entries.filter((e) => e.type === viewType);
-  const chart = filtered.map((e) => ({ date: fmtShort(e.date), v: Number(e.value) }));
-  const typeLabel = measurementTypes.find((t) => t.key === viewType)?.label;
+  const filtrados = itens.filter((e) => e.type === verTipo);
+  const serie = filtrados.map((e) => ({ date: fmtCurto(e.date), v: Number(e.value) }));
+  const rotulo = measurementTypes.find((t) => t.key === verTipo)?.label;
 
   return (
     <div>
-      <div style={{ display: "flex", gap: 8, marginBottom: 12, flexWrap: "wrap" }}>
-        <select value={type} onChange={(e) => setType(e.target.value)} style={{ ...dateInput, flex: 1, minWidth: 110 }}>
-          {measurementTypes.map((t) => <option key={t.key} value={t.key} style={{ background: "#1a1a22" }}>{t.label}</option>)}
-        </select>
-        <input type="number" inputMode="decimal" placeholder="cm" value={value}
-          onChange={(e) => setValue(e.target.value)} style={{ ...dateInput, width: 80 }} />
-        <input type="date" value={date} max={today()} onChange={(e) => setDate(e.target.value)} style={dateInput} />
-        <button onClick={add} className="hover-lift" style={addBtn(p)}>＋</button>
+      {!readOnly && (
+        <div style={{ display: "flex", gap: 8, marginBottom: 14, flexWrap: "wrap" }}>
+          <select value={tipo} onChange={(e) => setTipo(e.target.value)} style={{ ...campo, flex: "1 1 130px" }}>
+            {measurementTypes.map((t) => (
+              <option key={t.key} value={t.key} style={{ background: color.surface2 }}>{t.label}</option>
+            ))}
+          </select>
+          <input type="number" inputMode="decimal" step="0.1" placeholder="cm"
+            value={valor} onChange={(e) => setValor(e.target.value)} style={{ ...campo, width: 90 }} />
+          <input type="date" value={data} max={hoje()} onChange={(e) => setData(e.target.value)} style={campo} />
+          <button onClick={adicionar} style={botaoMais} aria-label="Adicionar medida">+</button>
+        </div>
+      )}
+
+      {erro && <Erro texto={erro} />}
+
+      <div style={{ ...microLabel, marginBottom: 6 }}>VER NO GRÁFICO</div>
+      <div style={{ display: "flex", gap: 5, marginBottom: 14, flexWrap: "wrap" }}>
+        {measurementTypes.map((t) => {
+          const on = verTipo === t.key;
+          return (
+            <button key={t.key} onClick={() => setVerTipo(t.key)} aria-pressed={on} style={{
+              background: on ? color.accentSoft : "transparent",
+              border: `1px solid ${on ? color.accentLine : color.hair}`,
+              borderRadius: radius.sm, padding: "5px 10px", cursor: "pointer",
+              fontSize: 11, fontFamily: font.num,
+              color: on ? color.accent : color.text3,
+            }}>{t.label}</button>
+          );
+        })}
       </div>
 
-      <div style={{ display: "flex", gap: 6, marginBottom: 14, flexWrap: "wrap" }}>
-        {measurementTypes.map((t) => (
-          <button key={t.key} onClick={() => setViewType(t.key)} className="tab-btn" style={{
-            background: viewType === t.key ? p.color + "22" : "transparent",
-            border: `1px solid ${viewType === t.key ? p.color + "66" : "#2a2a35"}`,
-            borderRadius: 6, padding: "4px 9px", fontSize: 10,
-            color: viewType === t.key ? p.accent : "#777", fontFamily: "'DM Mono', monospace",
-          }}>{t.label}</button>
-        ))}
-      </div>
-
-      {loading ? <Loading /> : filtered.length === 0 ? <Empty text={`Nenhuma medida de "${typeLabel}" ainda.`} /> : (
+      {carregando ? <Carregando /> : filtrados.length === 0 ? (
+        <Vazio><p style={{ margin: 0 }}>Nenhuma medida de {rotulo?.toLowerCase()} registrada.</p></Vazio>
+      ) : (
         <>
-          <Chart data={chart} dataKey="v" color={p.color} unit="cm" />
-          <HistoryList items={filtered} render={(e) => `${typeLabel}: ${e.value} cm`} onDelete={remove} accent={p.accent} />
+          <Grafico dados={serie} chave="v" unidade="cm" />
+          <Historico itens={filtrados} render={(e) => `${rotulo}: ${e.value} cm`} onRemover={readOnly ? null : remover} />
         </>
       )}
     </div>
   );
 }
 
-/* =================== FOTOS =================== */
-function Photos({ who, p }) {
-  const [photos, setPhotos] = useState([]);
-  const [loading, setLoading] = useState(true);
-  const [uploading, setUploading] = useState(false);
-  const [date, setDate] = useState(today());
-  const [pose, setPose] = useState("frente");
+/* =================== UI =================== */
 
-  async function refresh() {
-    setLoading(true);
-    try { setPhotos(await getPhotos(who)); } catch (e) { console.error(e); }
-    setLoading(false);
-  }
-  useEffect(() => { refresh(); }, [who]);
-
-  async function onFile(e) {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    setUploading(true);
-    try { await uploadPhoto({ person: who, date, pose, file }); await refresh(); }
-    catch (err) { alert("Erro ao enviar foto: " + err.message); }
-    setUploading(false);
-    e.target.value = "";
-  }
-  async function remove(row) {
-    if (!confirm("Apagar esta foto?")) return;
-    await deletePhoto(row); refresh();
-  }
-
-  return (
-    <div>
-      <div style={{ display: "flex", gap: 8, marginBottom: 14, flexWrap: "wrap", alignItems: "center" }}>
-        <select value={pose} onChange={(e) => setPose(e.target.value)} style={dateInput}>
-          {["frente", "lado", "costas"].map((x) => <option key={x} value={x} style={{ background: "#1a1a22" }}>{x}</option>)}
-        </select>
-        <input type="date" value={date} max={today()} onChange={(e) => setDate(e.target.value)} style={dateInput} />
-        <label className="hover-lift" style={{ ...addBtn(p), display: "inline-flex", alignItems: "center", padding: "0 16px", width: "auto", cursor: "pointer", fontSize: 12, gap: 6 }}>
-          {uploading ? "Enviando…" : "📸 Adicionar"}
-          <input type="file" accept="image/*" onChange={onFile} disabled={uploading} style={{ display: "none" }} />
-        </label>
-      </div>
-
-      {loading ? <Loading /> : photos.length === 0 ? <Empty text="Nenhuma foto de progresso ainda." /> : (
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(110px, 1fr))", gap: 8 }}>
-          {photos.map((ph) => (
-            <div key={ph.id} style={{ position: "relative", borderRadius: 10, overflow: "hidden", border: "1px solid #2a2a35", aspectRatio: "3/4" }}>
-              {ph.url && <img src={ph.url} alt={ph.pose} style={{ width: "100%", height: "100%", objectFit: "cover" }} />}
-              <div style={{ position: "absolute", bottom: 0, left: 0, right: 0, background: "linear-gradient(transparent, rgba(0,0,0,0.8))", padding: "14px 8px 6px", fontSize: 10, fontFamily: "'DM Mono', monospace", color: "#ddd", display: "flex", justifyContent: "space-between" }}>
-                <span>{fmtShort(ph.date)} · {ph.pose}</span>
-              </div>
-              <button onClick={() => remove(ph)} style={{ position: "absolute", top: 4, right: 4, background: "rgba(0,0,0,0.6)", border: "none", borderRadius: 6, color: "#fff", width: 22, height: 22, cursor: "pointer", fontSize: 12 }}>×</button>
-            </div>
-          ))}
-        </div>
-      )}
-      <p style={{ fontSize: 10, color: "#555", marginTop: 12, lineHeight: 1.6 }}>
-        As fotos ficam privadas (só acessíveis com o login de vocês) e são comprimidas automaticamente para economizar espaço. Tire sempre na mesma luz, pose e horário para comparações úteis.
-      </p>
-    </div>
-  );
-}
-
-/* =================== HELPERS DE UI =================== */
-function Chart({ data, dataKey, color, unit }) {
+function Grafico({ dados, chave, unidade }) {
   return (
     <div style={{ height: 200, marginBottom: 16, marginLeft: -10 }}>
       <ResponsiveContainer width="100%" height="100%">
-        <LineChart data={data} margin={{ top: 6, right: 14, bottom: 0, left: 0 }}>
+        <LineChart data={dados} margin={{ top: 6, right: 14, bottom: 0, left: 0 }}>
           <CartesianGrid stroke="rgba(255,255,255,0.06)" vertical={false} />
-          <XAxis dataKey="date" tick={{ fill: "#666", fontSize: 10, fontFamily: "DM Mono" }} tickLine={false} axisLine={{ stroke: "#2a2a35" }} />
-          <YAxis domain={["auto", "auto"]} tick={{ fill: "#666", fontSize: 10, fontFamily: "DM Mono" }} tickLine={false} axisLine={false} width={36} unit={unit} />
-          <Tooltip contentStyle={{ background: "#16161f", border: "1px solid #2a2a35", borderRadius: 8, fontSize: 12 }} labelStyle={{ color: "#999" }} />
-          <Line type="monotone" dataKey={dataKey} stroke={color} strokeWidth={2.5} dot={{ fill: color, r: 3 }} activeDot={{ r: 5 }} />
+          <XAxis dataKey="date" tick={{ fill: color.text3, fontSize: 10, fontFamily: "DM Mono" }}
+            tickLine={false} axisLine={{ stroke: color.hair }} />
+          <YAxis domain={["auto", "auto"]} tick={{ fill: color.text3, fontSize: 10, fontFamily: "DM Mono" }}
+            tickLine={false} axisLine={false} width={38} unit={unidade} />
+          <Tooltip
+            contentStyle={{ background: color.surface2, border: `1px solid ${color.hair}`, borderRadius: radius.sm, fontSize: 12 }}
+            labelStyle={{ color: color.text3 }} />
+          <Line type="monotone" dataKey={chave} stroke={color.accent} strokeWidth={2.5}
+            dot={{ fill: color.accent, r: 3 }} activeDot={{ r: 5 }} />
         </LineChart>
       </ResponsiveContainer>
     </div>
   );
 }
 
-function HistoryList({ items, render, onDelete, accent }) {
+function Historico({ itens, render, onRemover }) {
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
-      {[...items].reverse().map((e) => (
-        <div key={e.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 12px", background: "rgba(255,255,255,0.025)", borderRadius: 8, fontSize: 12 }}>
-          <span style={{ color: "#999", fontFamily: "'DM Mono', monospace" }}>{fmt(e.date)}</span>
-          <span style={{ color: accent }}>{render(e)}</span>
-          <button onClick={() => onDelete(e.id)} style={{ background: "none", border: "none", color: "#555", cursor: "pointer", fontSize: 14 }}>×</button>
+      {[...itens].reverse().map((e) => (
+        <div key={e.id} style={{
+          display: "flex", justifyContent: "space-between", alignItems: "center",
+          padding: "8px 12px", background: color.surface, borderRadius: radius.sm, fontSize: 12,
+        }}>
+          <span style={{ color: color.text3, fontFamily: font.num }}>{fmt(e.date)}</span>
+          <span style={{ color: color.accent, fontFamily: font.num }}>{render(e)}</span>
+          {onRemover ? (
+            <button onClick={() => onRemover(e.id)} aria-label="Remover"
+              style={{ background: "none", border: "none", color: color.text3, cursor: "pointer", fontSize: 14 }}>×</button>
+          ) : <span style={{ width: 14 }} />}
         </div>
       ))}
     </div>
   );
 }
 
-const Loading = () => <div style={{ textAlign: "center", color: "#555", fontSize: 12, padding: 30 }}>Carregando…</div>;
-const Empty = ({ text }) => <div style={{ textAlign: "center", color: "#555", fontSize: 12, padding: 30, fontStyle: "italic" }}>{text}</div>;
+const Carregando = () => (
+  <div style={{ textAlign: "center", color: color.text3, fontSize: 12, padding: 30 }}>Carregando…</div>
+);
 
-const dateInput = {
-  background: "rgba(255,255,255,0.05)", border: "1px solid #2a2a35", borderRadius: 8,
-  padding: "10px 12px", color: "#f0eee8", fontSize: 13, colorScheme: "dark",
+const Vazio = ({ children }) => (
+  <div style={{
+    color: color.text3, fontSize: 13, padding: space.lg, textAlign: "center",
+    background: color.surface, border: `1px solid ${color.hair}`, borderRadius: radius.md,
+  }}>{children}</div>
+);
+
+const Erro = ({ texto }) => (
+  <div style={{
+    fontSize: 12, color: color.danger, background: "rgba(229,115,115,0.12)",
+    borderRadius: radius.md, padding: "8px 12px", marginBottom: 12,
+  }}>{texto}</div>
+);
+
+const campo = {
+  boxSizing: "border-box", height: tap, padding: "0 12px",
+  background: color.surface2, border: `1px solid ${color.hair}`, borderRadius: radius.md,
+  color: color.text, fontSize: 15, colorScheme: "dark",
 };
-const addBtn = (p) => ({
-  background: `linear-gradient(135deg, ${p.color}, ${p.color}aa)`, border: "none", borderRadius: 8,
-  width: 44, color: "#0d0d12", fontSize: 20, fontWeight: 700, cursor: "pointer",
-});
+
+const botaoMais = {
+  width: 44, height: tap, flexShrink: 0, cursor: "pointer",
+  background: color.accent, border: "none", borderRadius: radius.md,
+  color: color.onAccent, fontSize: 20, fontWeight: 700,
+};

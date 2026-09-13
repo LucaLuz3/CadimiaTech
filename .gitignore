@@ -1,0 +1,22 @@
+# Dependências
+node_modules/
+
+# Build
+dist/
+dist-ssr/
+dev-dist/
+
+# Ambiente — NUNCA commitar: contém as chaves do Supabase
+.env
+.env.*
+!.env.example
+
+# Editor / SO
+.vscode/
+.idea/
+.DS_Store
+*.local
+
+# Logs
+npm-debug.log*
+yarn-error.log*

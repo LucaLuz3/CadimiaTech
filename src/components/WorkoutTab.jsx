@@ -4,7 +4,7 @@ import {
   saveWorkoutLog, getWorkoutLogs, bestSet,
   updatePlanExercise, addPlanExercise, deactivatePlanExercise, swapPlanExercise,
   reorderPlanExercises,
-  addCatalogExercise, updateCatalogExercise,
+  addCatalogExercise, updateCatalogExercise, forkCatalogExercise,
 } from "../lib/db";
 
 const today = () => new Date().toISOString().slice(0, 10);
@@ -50,7 +50,7 @@ function loadWipPart(part) {
   } catch { return {}; }
 }
 
-export default function WorkoutTab({ who, p, catalog = [], exLoading = false, onExercisesChanged }) {
+export default function WorkoutTab({ profileId, p, catalog = [], exLoading = false, readOnly = false, onExercisesChanged }) {
   const [activeDay, setActiveDay] = useState("A");
   const [date, setDate] = useState(today());
   const [logs, setLogs] = useState([]);
@@ -60,6 +60,12 @@ export default function WorkoutTab({ who, p, catalog = [], exLoading = false, on
 
   // ----- Modo de edição do plano (Fase 1: editar / adicionar / remover) -----
   const [editMode, setEditMode] = useState(false);
+
+  // Trocar para o perfil do parceiro no meio de uma edição fecharia o
+  // editor num estado inconsistente. Sai do modo edição junto.
+  useEffect(() => {
+    if (readOnly) { setEditMode(false); setEditing(null); }
+  }, [readOnly]);
   const [editing, setEditing] = useState(null);   // exercício sendo editado/criado (objeto) | null
   const [savingEx, setSavingEx] = useState(false);
 
@@ -91,7 +97,7 @@ export default function WorkoutTab({ who, p, catalog = [], exLoading = false, on
   const [completedMap, setCompletedMap] = useState(() => loadWipPart("completedMap")); // { "isa:A:2026-05-27": { [ex]: nº } }
 
   const day = p.days.find((d) => d.id === activeDay) || p.days[0];
-  const key = `${who}:${activeDay}:${date}`;
+  const key = `${profileId}:${activeDay}:${date}`;
   const draft = draftMap[key] || {};
   const completedSets = completedMap[key] || {};
 
@@ -115,13 +121,13 @@ export default function WorkoutTab({ who, p, catalog = [], exLoading = false, on
 
   async function refresh() {
     setLoading(true);
-    try { setLogs(await getWorkoutLogs(who)); }
+    try { setLogs(await getWorkoutLogs(profileId)); }
     catch (e) { setMsg("Erro ao carregar histórico: " + e.message); }
     setLoading(false);
   }
 
   // Ao trocar de perfil: recarrega o histórico do novo perfil (sem apagar o treino em andamento)
-  useEffect(() => { setMsg(""); setLogs([]); refresh(); }, [who]);
+  useEffect(() => { setMsg(""); setLogs([]); refresh(); }, [profileId]);
   // Ao trocar de dia: só limpa a mensagem (rascunho/progresso ficam guardados por perfil:dia:data)
   useEffect(() => { setMsg(""); }, [activeDay]);
   // Ao trocar de dia/perfil (ou quando o plano chega): abre o primeiro exercício ainda não concluído.
@@ -132,7 +138,7 @@ export default function WorkoutTab({ who, p, catalog = [], exLoading = false, on
     const firstPending = list.find((e) => (cc[e.name] || 0) < setCount(e.sets)) || list[0];
     setOpenKey(firstPending.placementId || firstPending.id || firstPending.name);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [who, activeDay, day?.exercises?.length]);
+  }, [profileId, activeDay, day?.exercises?.length]);
 
   // Avanço automático: o timer pediu para conferir se o exercício terminou.
   useEffect(() => {
@@ -389,6 +395,9 @@ export default function WorkoutTab({ who, p, catalog = [], exLoading = false, on
   }
 
   async function save() {
+    // Perfil do parceiro é leitura. A trava fica aqui além da RLS porque
+    // erro do Postgres em português ruim não é mensagem de produto.
+    if (readOnly) { setMsg("Você está vendo o perfil de outra pessoa — não dá para registrar treino aqui."); return; }
     setSaving(true); setMsg("");
     try {
       let count = 0;
@@ -400,7 +409,7 @@ export default function WorkoutTab({ who, p, catalog = [], exLoading = false, on
         if (rowsToSave.length === 0) continue;
         const sets = rowsToSave.map((r) => ({ weight: Number(r.weight) || 0, reps: Number(r.reps) || 0, warmup: !!r.warmup }));
         // saveWorkoutLog faz upsert pelo id estável do exercício (cai no nome se não houver id)
-        await saveWorkoutLog({ person: who, dayId: activeDay, exerciseId: ex.id, exerciseName: ex.name, date, sets });
+        await saveWorkoutLog({ profileId, dayId: activeDay, exerciseId: ex.id, exerciseName: ex.name, date, sets });
         count++;
       }
       if (count === 0) { setMsg("Marque as séries feitas ou edite algum peso para salvar."); }
@@ -427,7 +436,7 @@ export default function WorkoutTab({ who, p, catalog = [], exLoading = false, on
   function openEdit(ex) {
     setEditing({
       _mode: "edit",
-      placementId: ex.placementId, catalogId: ex.id,
+      placementId: ex.placementId, catalogId: ex.id, ownerId: ex.ownerId ?? null,
       name: ex.name, muscles: ex.muscles, mediaUrl: ex.mediaUrl || "",
       sets: ex.sets, reps: ex.reps, rest: ex.rest, rir: ex.rir,
       note: ex.note, priority: !!ex.priority,
@@ -440,6 +449,7 @@ export default function WorkoutTab({ who, p, catalog = [], exLoading = false, on
 
   async function saveEx() {
     if (!editing) return;
+    if (readOnly) { setMsg("Perfil de outra pessoa — o plano dela só pode ser alterado por ela."); return; }
     setSavingEx(true); setMsg("");
     try {
       const prescription = {
@@ -452,12 +462,12 @@ export default function WorkoutTab({ who, p, catalog = [], exLoading = false, on
         let catalogId = editing.catalogId;
         if (editing.creatingNew) {
           if (!editing.newName?.trim()) { setMsg("Dê um nome ao novo exercício."); setSavingEx(false); return; }
-          const created = await addCatalogExercise({ name: editing.newName, muscles: editing.newMuscles });
+          const created = await addCatalogExercise({ profileId, name: editing.newName, muscles: editing.newMuscles });
           catalogId = created.id;
         }
         if (!catalogId) { setMsg("Escolha um exercício ou crie um novo."); setSavingEx(false); return; }
         // 2) Cria o placement nesse dia.
-        await addPlanExercise({ person: who, dayId: activeDay, exerciseId: catalogId, fields: prescription });
+        await addPlanExercise({ profileId, dayId: activeDay, exerciseId: catalogId, fields: prescription });
       } else {
         // Modo editar.
         if (editing.swapping) {
@@ -465,7 +475,7 @@ export default function WorkoutTab({ who, p, catalog = [], exLoading = false, on
           let targetId = editing.swapTargetId;
           if (editing.creatingNew) {
             if (!editing.newName?.trim()) { setMsg("Dê um nome ao novo exercício."); setSavingEx(false); return; }
-            const created = await addCatalogExercise({ name: editing.newName, muscles: editing.newMuscles });
+            const created = await addCatalogExercise({ profileId, name: editing.newName, muscles: editing.newMuscles });
             targetId = created.id;
           }
           if (!targetId) { setMsg("Escolha o exercício para o qual trocar."); setSavingEx(false); return; }
@@ -474,7 +484,17 @@ export default function WorkoutTab({ who, p, catalog = [], exLoading = false, on
         } else {
           // Editar o catálogo (nome/músculos — afeta todos os planos) e a prescrição.
           if (!editing.name?.trim()) { setMsg("O exercício precisa de um nome."); setSavingEx(false); return; }
-          await updateCatalogExercise(editing.catalogId, {
+          // Exercício do catálogo COMPARTILHADO (owner_id null) não se edita:
+          // mudar nome ou músculos ali reescreveria o volume calculado de
+          // todos os outros usuários, retroativamente. Em vez disso copiamos
+          // para o catálogo de quem editou e apontamos o bloco para a cópia.
+          let alvoCatalogo = editing.catalogId;
+          if (editing.ownerId == null) {
+            const copia = await forkCatalogExercise(editing.catalogId, profileId);
+            alvoCatalogo = copia.id;
+            await swapPlanExercise(editing.placementId, alvoCatalogo);
+          }
+          await updateCatalogExercise(alvoCatalogo, {
             name: editing.name, muscles: editing.muscles,
             media_url: (editing.mediaUrl || "").trim() || null,
           });
@@ -565,13 +585,15 @@ export default function WorkoutTab({ who, p, catalog = [], exLoading = false, on
           </div>
           <input type="date" value={date} max={today()} onChange={(e) => setDate(e.target.value)}
             aria-label="Data do treino" style={{ ...dateInput, marginLeft: "auto" }} />
-          <button
-            onClick={() => { setEditMode((v) => !v); setEditing(null); }}
-            aria-pressed={editMode}
-            title={editMode ? "Concluir edição do plano" : "Editar plano"}
-            style={iconBtn(editMode)}>
-            {editMode ? "✓" : "✎"}
-          </button>
+          {!readOnly && (
+            <button
+              onClick={() => { setEditMode((v) => !v); setEditing(null); }}
+              aria-pressed={editMode}
+              title={editMode ? "Concluir edição do plano" : "Editar plano"}
+              style={iconBtn(editMode)}>
+              {editMode ? "✓" : "✎"}
+            </button>
+          )}
         </div>
         {editMode && (
           <div style={{ fontSize: 11, color: color.text3, marginTop: space.sm }}>

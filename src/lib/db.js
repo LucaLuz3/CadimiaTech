@@ -1,18 +1,56 @@
 import { supabase } from "./supabase";
 
-const PHOTO_BUCKET = "progress-photos";
+/* ============================================================
+   Acesso a dados — multi-tenant por profile_id.
+
+   Duas regras que valem para o arquivo inteiro:
+
+   1. LEITURA sempre recebe profileId explícito. É o que permite ver
+      o parceiro em modo leitura sem gambiarra.
+
+   2. ESCRITA nunca manda profile_id. A coluna tem
+      `default auth.uid()` no banco (migração 006), então o dono da
+      linha é decidido pelo Postgres a partir do JWT, não pelo
+      cliente. Não dá para forjar dono nem por engano nem de
+      propósito — e depois da 008 a RLS recusa de todo jeito.
+   ============================================================ */
+
+/* ---------------- PERFIL ---------------- */
+
+export async function getProfile(profileId) {
+  const { data, error } = await supabase
+    .from("profiles")
+    .select("id, display_name, sex, birth_date, height_cm, timezone")
+    .eq("id", profileId)
+    .maybeSingle();
+  if (error) throw error;
+  return data;
+}
+
+const PROFILE_FIELDS = ["display_name", "sex", "birth_date", "height_cm", "timezone"];
+
+export async function updateProfile(profileId, patch) {
+  const clean = {};
+  for (const f of PROFILE_FIELDS) if (f in patch) clean[f] = patch[f] === "" ? null : patch[f];
+  if (typeof clean.display_name === "string") clean.display_name = clean.display_name.trim();
+  clean.updated_at = new Date().toISOString();
+  const { data, error } = await supabase
+    .from("profiles").update(clean).eq("id", profileId).select().single();
+  if (error) throw error;
+  return data;
+}
 
 /* ---------------- WORKOUT LOGS ---------------- */
-// sets é um array [{ weight: number, reps: number }]
+// sets é um array [{ weight, reps, warmup }]
 
-export async function saveWorkoutLog({ person, dayId, exerciseId, exerciseName, date, sets, notes }) {
-  // O vínculo estável é o exerciseId. Se ele existir, procuramos/gravamos por ele
-  // (assim renomear o exercício não duplica nem perde o registro do dia).
-  // Mantemos exercise_name como rótulo de exibição/fallback.
+export async function saveWorkoutLog({ profileId, dayId, exerciseId, exerciseName, date, sets, notes }) {
+  // O vínculo estável é o exerciseId. Se existir, procuramos/gravamos por ele
+  // (renomear o exercício não duplica nem perde o registro do dia).
+  // exercise_name segue como rótulo de exibição/fallback.
   let q = supabase
     .from("workout_logs")
     .select("id")
-    .eq("person", person)
+    .eq("profile_id", profileId)
     .eq("date", date);
   q = exerciseId ? q.eq("exercise_id", exerciseId) : q.eq("exercise_name", exerciseName);
   const { data: rows, error: selErr } = await q.order("id", { ascending: true }).limit(1);
@@ -21,10 +59,9 @@ export async function saveWorkoutLog({ person, dayId, exerciseId, exerciseName, 
   const existing = rows && rows[0];
 
   if (existing) {
-    // Atualiza o registro do dia em vez de criar outro
     const payload = { day_id: dayId, sets, exercise_name: exerciseName };
     if (exerciseId !== undefined) payload.exercise_id = exerciseId;
-    if (notes !== undefined) payload.notes = notes; // só mexe em notes se foi informado
+    if (notes !== undefined) payload.notes = notes;
     const { data, error } = await supabase
       .from("workout_logs")
       .update(payload)
@@ -35,19 +72,21 @@ export async function saveWorkoutLog({ person, dayId, exerciseId, exerciseName, 
     return data;
   }
 
-  // Não existe ainda → cria
+  // profile_id omitido de propósito — ver cabeçalho do arquivo.
   const { data, error } = await supabase
     .from("workout_logs")
-    .insert({ person, day_id: dayId, exercise_id: exerciseId, exercise_name: exerciseName, date, sets, notes })
+    .insert({ day_id: dayId, exercise_id: exerciseId, exercise_name: exerciseName, date, sets, notes })
     .select()
     .single();
   if (error) throw error;
   return data;
 }
 
-
-export async function getWorkoutLogs(person, exerciseName = null) {
-  let q = supabase.from("workout_logs").select("*").eq("person", person).order("date", { ascending: false });
+export async function getWorkoutLogs(profileId, exerciseName = null) {
+  let q = supabase
+    .from("workout_logs").select("*")
+    .eq("profile_id", profileId)
+    .order("date", { ascending: false });
   if (exerciseName) q = q.eq("exercise_name", exerciseName);
   const { data, error } = await q;
   if (error) throw error;
@@ -73,14 +112,21 @@ export function bestSet(logs) {
   return best;
 }
 
-/* ---------------- EXERCISES (catálogo reutilizável) ---------------- */
-// O catálogo é a definição do movimento: nome, músculos e (futuro) mídia,
-// instruções, dicas. É compartilhado entre os perfis. Os logs se ligam
-// ao id do catálogo — o PR é do movimento, não do lugar no plano.
+/* ---------------- CATÁLOGO DE EXERCÍCIOS ---------------- */
+// owner_id null  = catálogo global curado. Todo mundo vê, ninguém edita.
+// owner_id preenchido = exercício do usuário. Só ele vê e edita.
+//
+// Editar um global não é permitido: a UI chama forkCatalogExercise, que
+// copia o exercício e os vínculos musculares para a conta de quem edita.
+// Sem isso, mudar o mapeamento de "Remada Curvada" mudaria o volume
+// calculado de todos os usuários, retroativamente.
 
 const CATALOG_FIELDS = ["name", "muscles", "media_url", "instructions", "tips", "equipment"];
 
-// Lista o catálogo inteiro, em ordem alfabética.
+export function isGlobalExercise(ex) {
+  return !ex || ex.owner_id == null;
+}
+
 export async function getCatalog() {
   const { data, error } = await supabase
     .from("exercises")
@@ -90,27 +136,27 @@ export async function getCatalog() {
   return data || [];
 }
 
-// Cria um exercício no catálogo. Se já existir um com o mesmo nome,
-// devolve o existente (o nome é único — evita duplicar o movimento).
-export async function addCatalogExercise({ name, muscles }) {
+// Cria um exercício NO CATÁLOGO DO USUÁRIO. Se ele já tiver um com o
+// mesmo nome, devolve o existente em vez de duplicar.
+export async function addCatalogExercise({ profileId, name, muscles }) {
   const trimmed = (name || "").trim();
   if (!trimmed) throw new Error("O exercício precisa de um nome.");
 
   const { data: found, error: selErr } = await supabase
-    .from("exercises").select("*").eq("name", trimmed).limit(1);
+    .from("exercises").select("*")
+    .eq("owner_id", profileId).eq("name", trimmed).limit(1);
   if (selErr) throw selErr;
   if (found && found[0]) return found[0];
 
   const { data, error } = await supabase
     .from("exercises")
-    .insert({ name: trimmed, muscles: muscles || null })
+    .insert({ name: trimmed, muscles: muscles || null, owner_id: profileId })
     .select()
     .single();
   if (error) throw error;
   return data;
 }
 
-// Atualiza um item do catálogo (afeta TODOS os planos que o usam).
 export async function updateCatalogExercise(id, patch) {
   const clean = {};
   for (const f of CATALOG_FIELDS) if (f in patch) clean[f] = patch[f];
@@ -122,19 +168,51 @@ export async function updateCatalogExercise(id, patch) {
   return data;
 }
 
-/* ---------------- PLAN EXERCISES (placements) ---------------- */
-// Um placement diz ONDE um exercício do catálogo entra no plano de alguém
-// (perfil, dia, posição) e com qual PRESCRIÇÃO (séries, reps, descanso,
-// RIR, prioridade, nota). O nome/músculos vêm do catálogo via join.
+// Copia um exercício global para o catálogo do usuário, com os vínculos
+// musculares junto, e devolve a cópia. Os logs antigos continuam ligados
+// ao exercício global — o histórico não se mistura, que é o mesmo
+// princípio do swapPlanExercise.
+export async function forkCatalogExercise(exerciseId, profileId) {
+  const { data: orig, error: e1 } = await supabase
+    .from("exercises").select("*").eq("id", exerciseId).single();
+  if (e1) throw e1;
+  if (!isGlobalExercise(orig)) return orig; // já é seu, nada a fazer
+
+  const { data: existente } = await supabase
+    .from("exercises").select("*")
+    .eq("owner_id", profileId).eq("name", orig.name).limit(1);
+  if (existente && existente[0]) return existente[0];
+
+  const copia = { owner_id: profileId };
+  for (const f of CATALOG_FIELDS) copia[f] = orig[f];
+
+  const { data: novo, error: e2 } = await supabase
+    .from("exercises").insert(copia).select().single();
+  if (e2) throw e2;
+
+  const { data: vinculos, error: e3 } = await supabase
+    .from("exercise_muscles").select("muscle_slug, role, contribution")
+    .eq("exercise_id", exerciseId);
+  if (e3) throw e3;
+
+  if (vinculos && vinculos.length) {
+    const { error: e4 } = await supabase.from("exercise_muscles").insert(
+      vinculos.map((v) => ({ ...v, exercise_id: novo.id }))
+    );
+    if (e4) throw e4;
+  }
+  return novo;
+}
+
+/* ---------------- PLACEMENTS (plano) ---------------- */
 
 const PLACEMENT_FIELDS = ["sets", "reps", "rest", "rir", "note", "priority"];
 
-// Lê os placements ativos de um perfil, já com o item de catálogo embutido.
-export async function getPlanExercises(person) {
+export async function getPlanExercises(profileId) {
   const { data, error } = await supabase
     .from("plan_exercises")
-    .select("id, person, day_id, position, sets, reps, rest, rir, note, priority, active, exercise_id, exercises ( id, name, muscles, media_url, instructions, tips, equipment )")
-    .eq("person", person)
+    .select("id, profile_id, day_id, position, sets, reps, rest, rir, note, priority, active, exercise_id, exercises ( id, name, muscles, media_url, instructions, tips, equipment, owner_id )")
+    .eq("profile_id", profileId)
     .eq("active", true)
     .order("day_id", { ascending: true })
     .order("position", { ascending: true });
@@ -150,7 +228,6 @@ function setsToNumber(v) {
   return m ? Number(m[0]) : null;
 }
 
-// Atualiza a prescrição de um placement (campos do bloco, não do catálogo).
 export async function updatePlanExercise(id, patch) {
   const clean = {};
   for (const f of PLACEMENT_FIELDS) if (f in patch) clean[f] = patch[f];
@@ -162,18 +239,17 @@ export async function updatePlanExercise(id, patch) {
   return data;
 }
 
-// Adiciona um exercício do catálogo a um dia (no fim da lista).
-export async function addPlanExercise({ person, dayId, exerciseId, fields }) {
+export async function addPlanExercise({ profileId, dayId, exerciseId, fields }) {
   if (!exerciseId) throw new Error("Escolha um exercício do catálogo.");
   const { count, error: cErr } = await supabase
     .from("plan_exercises")
     .select("id", { count: "exact", head: true })
-    .eq("person", person)
+    .eq("profile_id", profileId)
     .eq("day_id", dayId)
     .eq("active", true);
   if (cErr) throw cErr;
 
-  const row = { person, day_id: dayId, exercise_id: exerciseId, position: count || 0, active: true, priority: false };
+  const row = { day_id: dayId, exercise_id: exerciseId, position: count || 0, active: true, priority: false };
   for (const f of PLACEMENT_FIELDS) if (fields && f in fields) row[f] = fields[f];
   row.sets_n = setsToNumber(row.sets);
 
@@ -197,16 +273,11 @@ export async function swapPlanExercise(placementId, newExerciseId) {
   return data;
 }
 
-// Persiste a nova ordem dos exercícios de um dia: grava position = índice
-// para cada placement, na ordem recebida. Os ids devem ser os placement ids.
 export async function reorderPlanExercises(orderedPlacementIds) {
   const now = new Date().toISOString();
   const results = await Promise.all(
     (orderedPlacementIds || []).map((id, idx) =>
-      supabase
-        .from("plan_exercises")
-        .update({ position: idx, updated_at: now })
-        .eq("id", id)
+      supabase.from("plan_exercises").update({ position: idx, updated_at: now }).eq("id", id)
     )
   );
   const failed = results.find((r) => r.error);
@@ -224,8 +295,7 @@ export async function deactivatePlanExercise(id) {
 
 /* ---------------- VOLUME POR GRUPO MUSCULAR ---------------- */
 // O cálculo mora no Postgres (views v_weekly_volume_*), não aqui: a regra
-// precisa ser a mesma para os dois perfis e não faz sentido duplicá-la em JS.
-// Estas funções só leem e montam a série de semanas.
+// precisa ser a mesma para todo mundo e não faz sentido duplicá-la em JS.
 
 // Segunda-feira da semana de `d`, em ISO (YYYY-MM-DD).
 // Precisa casar com o date_trunc('week', ...) do Postgres, que começa na segunda.
@@ -249,53 +319,52 @@ export async function getMuscleGroups() {
   return data || [];
 }
 
-export async function getVolumeTargets(person) {
+export async function getVolumeTargets(profileId) {
   const { data, error } = await supabase
-    .from("volume_targets").select("*").eq("person", person);
+    .from("volume_targets").select("*").eq("profile_id", profileId);
   if (error) throw error;
   return data || [];
 }
 
-export async function upsertVolumeTarget({ person, muscleSlug, minSets, maxSets, priority, note }) {
+export async function upsertVolumeTarget({ profileId, muscleSlug, minSets, maxSets, priority, note }) {
   const { data, error } = await supabase
     .from("volume_targets")
     .upsert({
-      person,
+      profile_id: profileId,
       muscle_slug: muscleSlug,
       min_sets: Number(minSets) || 0,
       max_sets: Number(maxSets) || 0,
       priority: !!priority,
       note: note || null,
       updated_at: new Date().toISOString(),
-    }, { onConflict: "person,muscle_slug" })
+    }, { onConflict: "profile_id,muscle_slug" })
     .select()
     .single();
   if (error) throw error;
   return data;
 }
 
-export async function getPlannedVolume(person) {
+export async function getPlannedVolume(profileId) {
   const { data, error } = await supabase
-    .from("v_weekly_volume_planned").select("*").eq("person", person);
+    .from("v_weekly_volume_planned").select("*").eq("profile_id", profileId);
   if (error) throw error;
   return data || [];
 }
 
-// Volume realizado das últimas `weeks` semanas (inclui a atual).
-export async function getPerformedVolume(person, weeks = 5) {
+export async function getPerformedVolume(profileId, weeks = 5) {
   const from = addWeeksISO(weekStartISO(), -(weeks - 1));
   const { data, error } = await supabase
     .from("v_weekly_volume_performed")
     .select("*")
-    .eq("person", person)
+    .eq("profile_id", profileId)
     .gte("week_start", from);
   if (error) throw error;
   return data || [];
 }
 
-export async function getUnmappedExercises(person) {
+export async function getUnmappedExercises(profileId) {
   const { data, error } = await supabase
-    .from("v_unmapped_exercises").select("*").eq("person", person);
+    .from("v_unmapped_exercises").select("*").eq("profile_id", profileId);
   if (error) throw error;
   return data || [];
 }
@@ -309,8 +378,23 @@ export async function getExerciseMuscles(exerciseId) {
 
 // Substitui o conjunto de vínculos de um exercício (delete + insert).
 // links = [{ muscleSlug, role, contribution }]
+//
+// Recusa exercício global: mudar o vínculo de um global reescreveria o
+// volume calculado de todos os usuários. Quem quer um mapeamento próprio
+// chama forkCatalogExercise antes.
 export async function setExerciseMuscles(exerciseId, links) {
   if (!exerciseId) throw new Error("Exercício inválido.");
+
+  const { data: ex, error: exErr } = await supabase
+    .from("exercises").select("id, owner_id, name").eq("id", exerciseId).single();
+  if (exErr) throw exErr;
+  if (isGlobalExercise(ex)) {
+    throw new Error(
+      `"${ex.name}" é do catálogo compartilhado e não pode ser alterado. ` +
+      `Crie uma cópia sua para ajustar o mapeamento muscular.`
+    );
+  }
+
   const { error: delErr } = await supabase
     .from("exercise_muscles").delete().eq("exercise_id", exerciseId);
   if (delErr) throw delErr;
@@ -332,13 +416,13 @@ export async function setExerciseMuscles(exerciseId, links) {
 
 // Monta a linha por músculo consumida pela aba Análise:
 // semana atual (parcial) + média das 4 anteriores + planejado + meta.
-export async function getVolumeAnalysis(person) {
+export async function getVolumeAnalysis(profileId) {
   const [groups, targets, planned, performed, unmapped] = await Promise.all([
     getMuscleGroups(),
-    getVolumeTargets(person),
-    getPlannedVolume(person),
-    getPerformedVolume(person, 5),
-    getUnmappedExercises(person),
+    getVolumeTargets(profileId),
+    getPlannedVolume(profileId),
+    getPerformedVolume(profileId, 5),
+    getUnmappedExercises(profileId),
   ]);
 
   const current = weekStartISO();
@@ -372,23 +456,25 @@ export async function getVolumeAnalysis(person) {
   return { rows, unmapped, currentWeek: current };
 }
 
-/* ---------------- BODY WEIGHT ---------------- */
+/* ---------------- PESO CORPORAL ---------------- */
+// Entrada da tendência (EWMA) que o motor da F1 vai consumir. É por isso
+// que peso ficou no V0 mesmo com nutrição e fotos cortadas.
 
-export async function addBodyWeight({ person, date, weight }) {
+export async function addBodyWeight({ date, weight }) {
   const { data, error } = await supabase
     .from("body_weights")
-    .insert({ person, date, weight })
+    .insert({ date, weight })
     .select()
     .single();
   if (error) throw error;
   return data;
 }
 
-export async function getBodyWeights(person) {
+export async function getBodyWeights(profileId) {
   const { data, error } = await supabase
     .from("body_weights")
     .select("*")
-    .eq("person", person)
+    .eq("profile_id", profileId)
     .order("date", { ascending: true });
   if (error) throw error;
   return data || [];
@@ -399,23 +485,23 @@ export async function deleteBodyWeight(id) {
   if (error) throw error;
 }
 
-/* ---------------- MEASUREMENTS ---------------- */
+/* ---------------- MEDIDAS ---------------- */
 
-export async function addMeasurement({ person, date, type, value }) {
+export async function addMeasurement({ date, type, value }) {
   const { data, error } = await supabase
     .from("measurements")
-    .insert({ person, date, type, value })
+    .insert({ date, type, value })
     .select()
     .single();
   if (error) throw error;
   return data;
 }
 
-export async function getMeasurements(person) {
+export async function getMeasurements(profileId) {
   const { data, error } = await supabase
     .from("measurements")
     .select("*")
-    .eq("person", person)
+    .eq("profile_id", profileId)
     .order("date", { ascending: true });
   if (error) throw error;
   return data || [];
@@ -426,76 +512,17 @@ export async function deleteMeasurement(id) {
   if (error) throw error;
 }
 
-/* ---------------- PROGRESS PHOTOS ---------------- */
-// Comprime no navegador antes de subir (economiza o storage gratuito de 1 GB).
-
-async function compressImage(file, maxSize = 1280, quality = 0.8) {
-  const dataUrl = await new Promise((res, rej) => {
-    const r = new FileReader();
-    r.onload = () => res(r.result);
-    r.onerror = rej;
-    r.readAsDataURL(file);
-  });
-  const img = await new Promise((res, rej) => {
-    const i = new Image();
-    i.onload = () => res(i);
-    i.onerror = rej;
-    i.src = dataUrl;
-  });
-  let { width, height } = img;
-  if (width > height && width > maxSize) {
-    height = Math.round((height * maxSize) / width);
-    width = maxSize;
-  } else if (height > maxSize) {
-    width = Math.round((width * maxSize) / height);
-    height = maxSize;
-  }
-  const canvas = document.createElement("canvas");
-  canvas.width = width;
-  canvas.height = height;
-  canvas.getContext("2d").drawImage(img, 0, 0, width, height);
-  return new Promise((res) => canvas.toBlob((b) => res(b), "image/jpeg", quality));
-}
-
-export async function uploadPhoto({ person, date, pose, file }) {
-  const blob = await compressImage(file);
-  const path = `${person}/${Date.now()}.jpg`;
-  const { error: upErr } = await supabase.storage
-    .from(PHOTO_BUCKET)
-    .upload(path, blob, { contentType: "image/jpeg" });
-  if (upErr) throw upErr;
-
-  const { data, error } = await supabase
-    .from("progress_photos")
-    .insert({ person, date, pose, path })
-    .select()
-    .single();
-  if (error) throw error;
-  return data;
-}
-
-export async function getPhotos(person) {
-  const { data, error } = await supabase
-    .from("progress_photos")
-    .select("*")
-    .eq("person", person)
-    .order("date", { ascending: false });
-  if (error) throw error;
-
-  // Gera URLs temporárias assinadas (bucket privado).
-  const withUrls = await Promise.all(
-    (data || []).map(async (row) => {
-      const { data: signed } = await supabase.storage
-        .from(PHOTO_BUCKET)
-        .createSignedUrl(row.path, 60 * 60);
-      return { ...row, url: signed?.signedUrl };
-    })
-  );
-  return withUrls;
-}
-
-export async function deletePhoto(row) {
-  await supabase.storage.from(PHOTO_BUCKET).remove([row.path]);
-  const { error } = await supabase.from("progress_photos").delete().eq("id", row.id);
-  if (error) throw error;
-}
+/* ---------------- FOTOS DE PROGRESSO ---------------- */
+//
+//  REMOVIDO NO V0 (decisão de 13/09).
+//
+//  uploadPhoto / getPhotos / deletePhoto e o compressImage saíram daqui
+//  junto com toda a dependência de Storage no cliente. Motivo: as fotos
+//  de corpo eram a maior superfície de LGPD do app, e as políticas do
+//  bucket não verificavam dono nenhum.
+//
+//  A tabela `progress_photos` e o bucket CONTINUAM no banco com as 4
+//  fotos existentes, e a 008 corrige a política. Quando a feature voltar,
+//  o dado está lá — e o caminho legado `isa/…` segue válido, porque a
+//  política nova resolve o dono por join com progress_photos, não por
+//  prefixo do caminho.

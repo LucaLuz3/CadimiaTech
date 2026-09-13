@@ -2,11 +2,19 @@
 <html lang="pt-BR">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
-    <meta name="theme-color" content="#0d0d12" />
-    <meta name="description" content="Plano de treino e nutrição do casal — Isa & Luca" />
-    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>💪</text></svg>" />
-    <title>Treino Duo · Isa & Luca</title>
+    <!-- user-scalable=no e maximum-scale=1 saíram: impediam zoom para quem
+         enxerga mal, o Safari ignora desde o iOS 10, e é apontado em
+         auditoria de acessibilidade. Um app de saúde que bloqueia zoom
+         começa mal numa revisão da Apple. -->
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="theme-color" content="#131211" />
+    <meta name="description" content="Plano de treino com volume semanal por grupo muscular calculado a partir dos treinos registrados." />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="Treino Duo" />
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+    <title>Treino Duo</title>
   </head>
   <body>
     <div id="root"></div>

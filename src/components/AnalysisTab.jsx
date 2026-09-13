@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { getVolumeAnalysis } from "../lib/db";
+import { color, font, radius } from "../theme";
 
 const REGIONS = [
   { key: "bracos", label: "Braços / ombros" },
@@ -26,7 +27,7 @@ function fmt(n) {
   return Number.isInteger(r) ? String(r) : r.toFixed(1).replace(".", ",");
 }
 
-export default function AnalysisTab({ who, p }) {
+export default function AnalysisTab({ profileId, p }) {
   const [data, setData] = useState(null);
   const [err, setErr] = useState("");
   const [loading, setLoading] = useState(true);
@@ -35,12 +36,12 @@ export default function AnalysisTab({ who, p }) {
     let alive = true;
     setLoading(true);
     setErr("");
-    getVolumeAnalysis(who)
+    getVolumeAnalysis(profileId)
       .then((d) => { if (alive) setData(d); })
       .catch((e) => { if (alive) setErr(e.message || String(e)); })
       .finally(() => { if (alive) setLoading(false); });
     return () => { alive = false; };
-  }, [who]);
+  }, [profileId]);
 
   if (loading) {
     return <div style={{ textAlign: "center", color: "#555", fontSize: 12, padding: 24 }}>Calculando volume…</div>;
@@ -56,8 +57,8 @@ export default function AnalysisTab({ who, p }) {
   return (
     <div className="fade-in">
       <div style={{ marginBottom: 16 }}>
-        <div style={{ fontFamily: "'Bebas Neue', sans-serif", fontSize: 26, color: p.accent, letterSpacing: "0.05em", marginBottom: 4 }}>
-          ANÁLISE DE VOLUME — {p.name.toUpperCase()}
+        <div style={{ fontSize: 20, fontWeight: 700, letterSpacing: "-0.01em", marginBottom: 4 }}>
+          Análise de volume — {p.name}
         </div>
         <p style={{ color: "#666", fontSize: 12, lineHeight: 1.6 }}>
           Séries semanais por grupo muscular, calculadas a partir do plano e dos treinos registrados.
@@ -92,7 +93,7 @@ export default function AnalysisTab({ who, p }) {
               <span style={{ fontFamily: "'Bebas Neue', sans-serif", fontSize: 15, color: "#999", letterSpacing: "0.08em" }}>
                 {reg.label.toUpperCase()}
               </span>
-              <span style={{ fontFamily: "'DM Mono', monospace", fontSize: 10, color: "#666" }}>
+              <span style={{ fontFamily: font.num, fontSize: 10, color: "#666" }}>
                 {fmt(regPlanned)} séries · {share}% do plano
               </span>
             </div>
@@ -107,16 +108,16 @@ export default function AnalysisTab({ who, p }) {
                       <span style={{ fontSize: 13, color: r.priority ? "#f0eee8" : "#888" }}>{r.label}</span>
                       {r.priority && (
                         <span style={{
-                          fontSize: 9, color: p.accent, background: p.color + "22", borderRadius: 3,
-                          padding: "1px 5px", fontFamily: "'DM Mono', monospace",
+                          fontSize: 9, color: color.accent, background: color.accentSoft, borderRadius: 3,
+                          padding: "1px 5px", fontFamily: font.num,
                         }}>PRIORIDADE</span>
                       )}
                       <span style={{
                         fontSize: 9, color: st.color, border: `1px solid ${st.color}44`,
-                        borderRadius: 3, padding: "1px 5px", fontFamily: "'DM Mono', monospace",
+                        borderRadius: 3, padding: "1px 5px", fontFamily: font.num,
                       }}>{st.text}</span>
                     </div>
-                    <span style={{ fontFamily: "'DM Mono', monospace", fontSize: 11, color: "#666", whiteSpace: "nowrap" }}>
+                    <span style={{ fontFamily: font.num, fontSize: 11, color: "#666", whiteSpace: "nowrap" }}>
                       meta {fmt(r.min)}–{fmt(r.max)}
                     </span>
                   </div>
@@ -134,7 +135,7 @@ export default function AnalysisTab({ who, p }) {
                     <div style={{
                       position: "absolute", top: 0, bottom: 0, left: 0,
                       width: `${Math.min(100, (r.planned / scale) * 100)}%`,
-                      background: r.priority ? p.color : "#4a4a55",
+                      background: r.priority ? color.accent : color.surface2,
                       borderRadius: 4,
                       transition: "width 0.6s cubic-bezier(0.34,1.56,0.64,1)",
                     }} />
@@ -147,9 +148,9 @@ export default function AnalysisTab({ who, p }) {
 
                   <div style={{
                     display: "flex", gap: 12, marginTop: 4, flexWrap: "wrap",
-                    fontFamily: "'DM Mono', monospace", fontSize: 10, color: "#666",
+                    fontFamily: font.num, fontSize: 10, color: "#666",
                   }}>
-                    <span style={{ color: r.priority ? p.accent : "#777" }}>plano {fmt(r.planned)}</span>
+                    <span style={{ color: r.priority ? color.accent : color.text3 }}>plano {fmt(r.planned)}</span>
                     <span>│ média 4sem {fmt(r.avg4)}</span>
                     <span style={{ color: "#555" }}>│ esta semana {fmt(r.currentWeek)} (parcial)</span>
                     {r.note && <span style={{ color: "#555", fontStyle: "italic" }}>— {r.note}</span>}
@@ -166,7 +167,7 @@ export default function AnalysisTab({ who, p }) {
         border: "1px solid #ffffff10", borderRadius: 10, fontSize: 11, color: "#666", lineHeight: 1.7,
       }}>
         <div style={{ marginBottom: 6 }}>
-          <span style={{ display: "inline-block", width: 10, height: 10, background: p.color, borderRadius: 2, marginRight: 6, verticalAlign: -1 }} />
+          <span style={{ display: "inline-block", width: 10, height: 10, background: color.accent, borderRadius: 2, marginRight: 6, verticalAlign: -1 }} />
           barra = volume <strong style={{ color: "#999" }}>planejado</strong> ·
           <span style={{ display: "inline-block", width: 2, height: 10, background: "#f0eee8", margin: "0 6px 0 8px", verticalAlign: -1 }} />
           marca = <strong style={{ color: "#999" }}>média realizada</strong> das 4 semanas ·
