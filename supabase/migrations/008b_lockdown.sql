@@ -1,32 +1,24 @@
 -- ============================================================
---  008_rls_lockdown.sql — RLS de verdade (LOCKDOWN)
+--  008b_lockdown.sql — aperta a RLS das tabelas de dados
 --
---  ORDEM CORRIGIDA (13/09). A spec original dizia que esta migração
---  tinha de ir junto com o deploy do app, com indisponibilidade. Não
---  precisa: o app novo lê por profile_id, que a 007 já preencheu, e
---  funciona com a RLS permissiva de hoje. Então:
+--  Segunda metade da antiga 008. A primeira virou 008a e roda ANTES do
+--  deploy (políticas de profiles/dupla + views com as duas colunas).
+--  Esta aqui roda DEPOIS, porque aperta as seis tabelas de dados para
+--  `profile_id = auth.uid()` — e o app antigo, que consulta por
+--  `person`, pararia de enxergar os dados da Bela.
 --
---     1. deploy do app novo   ← primeiro
---     2. conferir que os dois perfis funcionam
---     3. ESTA migração        ← só depois
---     4. 009_contract, dias depois
---
---  Rodar isto ANTES do deploy derruba o app antigo, que ainda consulta
---  por `person`.
+--      006 ✅ → 007 ✅ → 007b ✅ → 008a → DEPLOY → [ 008b ] → 009
 --
 --  Idempotente: as políticas são dropadas e recriadas.
 --
---  Fecha os quatro achados:
+--  Fecha os achados que sobraram:
 --    1  fotos de progresso legíveis e apagáveis por qualquer autenticado
 --    2  setExerciseMuscles reescrevendo o volume de todo mundo
---    3  todas as políticas em using(true)
+--    3  as nove políticas em using(true)
 --    4  muscle_groups apagável, com cascade para vínculos e metas
---  E mais um, que só apareceu escrevendo o app: as quatro tabelas
---  criadas na 006 ficaram SEM RLS nenhuma.
 -- ============================================================
 
--- 0) PRÉ-CONDIÇÃO ---------------------------------------------
--- Sem backfill completo, tornar profile_id NOT NULL quebraria tudo.
+-- 0) PRÉ-CONDIÇÕES --------------------------------------------
 
 do $$
 declare n int;
@@ -39,87 +31,17 @@ begin
        + (select count(*) from public.volume_targets  where profile_id is null)
     into n;
   if n > 0 then
-    raise exception 'A 007 nao terminou: % linha(s) sem profile_id. Rode a 007 antes desta.', n;
+    raise exception 'A 007 nao terminou: % linha(s) sem profile_id.', n;
+  end if;
+
+  if to_regprocedure('public.readable_profile_ids()') is null then
+    raise exception 'Rode a 008a antes desta: a funcao readable_profile_ids nao existe.';
   end if;
 end $$;
 
--- 1) FUNÇÕES DE APOIO -----------------------------------------
--- SECURITY DEFINER para não entrar em recursão: a política de
--- duo_members precisa saber qual é a minha dupla, e descobrir isso
--- lendo duo_members com RLS ligada se morderia pelo rabo.
-
-create or replace function public.my_duo_id()
-returns uuid language sql stable security definer set search_path = public as $$
-  select duo_id from public.duo_members where profile_id = auth.uid() limit 1;
-$$;
-
--- Perfis cujos dados eu posso LER: o meu, mais o do parceiro que
--- deixou. Note o `outro.share_enabled` — quem decide se eu vejo é ele,
--- não eu.
-create or replace function public.readable_profile_ids()
-returns setof uuid language sql stable security definer set search_path = public as $$
-  select auth.uid()
-  union
-  select outro.profile_id
-    from public.duo_members meu
-    join public.duo_members outro
-      on outro.duo_id = meu.duo_id and outro.profile_id <> meu.profile_id
-   where meu.profile_id = auth.uid()
-     and outro.share_enabled;
-$$;
-
-grant execute on function public.my_duo_id()           to authenticated;
-grant execute on function public.readable_profile_ids() to authenticated;
-grant execute on function public.duo_partner_ids(uuid)  to authenticated;
-
--- 2) ACEITE DE CONVITE ----------------------------------------
--- Precisa ser função: quem aceita ainda não é membro, logo não enxerga
--- a dupla para se inserir nela. O `for update` no token é a trava
--- contra corrida — o mesmo cuidado que o seed precisou quando o
--- onAuthStateChange do Supabase disparou duas vezes no login.
-
-create or replace function public.accept_duo_invite(p_token text)
-returns uuid language plpgsql security definer set search_path = public as $$
-declare
-  v_duo uuid;
-  v_me  uuid := auth.uid();
-  v_n   int;
-begin
-  if v_me is null then raise exception 'Não autenticado.'; end if;
-
-  select duo_id into v_duo
-    from public.duo_invites
-   where token = p_token
-     and accepted_by is null
-     and expires_at > now()
-     for update;
-
-  if v_duo is null then raise exception 'Convite inválido ou expirado.'; end if;
-
-  if exists (select 1 from public.duo_members where profile_id = v_me and duo_id <> v_duo) then
-    raise exception 'Você já está em outra dupla. Desfaça a atual antes.';
-  end if;
-
-  select count(*) into v_n from public.duo_members where duo_id = v_duo;
-  if v_n >= 2 and not exists (select 1 from public.duo_members where duo_id = v_duo and profile_id = v_me) then
-    raise exception 'Essa dupla já está completa.';
-  end if;
-
-  insert into public.duo_members (duo_id, profile_id)
-  values (v_duo, v_me)
-  on conflict do nothing;
-
-  update public.duo_invites
-     set accepted_by = v_me, accepted_at = now()
-   where token = p_token;
-
-  return v_duo;
-end $$;
-
-grant execute on function public.accept_duo_invite(text) to authenticated;
-
--- 3) LIMPEZA DAS POLÍTICAS ANTIGAS ----------------------------
--- Todas as oito eram `for all to authenticated using (true)`.
+-- 1) LIMPEZA DAS POLÍTICAS ANTIGAS ----------------------------
+-- As nove `for all to authenticated using (true)`, mais as de storage
+-- (nomes antigos E os que esta migração cria, para ser idempotente).
 
 do $$
 declare r record;
@@ -130,9 +52,7 @@ begin
      where (schemaname = 'public' and tablename in (
              'workout_logs','body_weights','measurements','progress_photos',
              'plan_exercises','volume_targets','exercises','exercise_muscles',
-             'muscle_groups','profiles','duos','duo_members','duo_invites'))
-        -- os nomes antigos E os que esta própria migração cria, para que
-        -- rodar a 008 duas vezes não estoure em "policy already exists"
+             'muscle_groups'))
         or (schemaname = 'storage' and tablename = 'objects'
             and (policyname in ('auth read photos','auth upload photos','auth delete photos')
                  or policyname like 'fotos:%'))
@@ -141,15 +61,10 @@ begin
   end loop;
 end $$;
 
--- 4) RLS LIGADA EM TUDO ---------------------------------------
--- As quatro tabelas da 006 nasceram sem RLS. Em Supabase isso significa
--- acesso total por qualquer autenticado via PostgREST.
-
 do $$
 declare t text;
 begin
   foreach t in array array[
-    'profiles','duos','duo_members','duo_invites',
     'workout_logs','body_weights','measurements','progress_photos',
     'plan_exercises','volume_targets','exercises','exercise_muscles','muscle_groups'
   ] loop
@@ -157,57 +72,7 @@ begin
   end loop;
 end $$;
 
--- 5) PERFIS ---------------------------------------------------
-
-create policy "perfil: leio o meu e o do parceiro" on public.profiles
-  for select to authenticated
-  using (id in (select public.readable_profile_ids()));
-
-create policy "perfil: edito só o meu" on public.profiles
-  for update to authenticated
-  using (id = auth.uid()) with check (id = auth.uid());
-
--- Sem INSERT nem DELETE: quem cria é o trigger on_auth_user_created,
--- quem apaga é o cascade de auth.users.
-
--- 6) DUPLA ----------------------------------------------------
-
-create policy "dupla: vejo a minha" on public.duos
-  for select to authenticated using (id = public.my_duo_id());
-
-create policy "dupla: crio a minha" on public.duos
-  for insert to authenticated with check (true);
-
--- Sair da dupla desfaz a dupla — sem parceiro, dupla de um não é nada.
-create policy "dupla: desfaço a minha" on public.duos
-  for delete to authenticated using (id = public.my_duo_id());
-
-create policy "membros: vejo os da minha dupla" on public.duo_members
-  for select to authenticated using (duo_id = public.my_duo_id());
-
--- Só entro numa dupla vazia por aqui; entrar numa dupla de outro é
--- exclusividade do accept_duo_invite.
-create policy "membros: entro como eu mesmo" on public.duo_members
-  for insert to authenticated with check (profile_id = auth.uid());
-
-create policy "membros: mudo só o meu compartilhamento" on public.duo_members
-  for update to authenticated
-  using (profile_id = auth.uid()) with check (profile_id = auth.uid());
-
-create policy "membros: saio eu mesmo" on public.duo_members
-  for delete to authenticated using (profile_id = auth.uid());
-
-create policy "convites: vejo os que criei" on public.duo_invites
-  for select to authenticated using (created_by = auth.uid());
-
-create policy "convites: crio para a minha dupla" on public.duo_invites
-  for insert to authenticated
-  with check (created_by = auth.uid() and duo_id = public.my_duo_id());
-
-create policy "convites: apago os meus" on public.duo_invites
-  for delete to authenticated using (created_by = auth.uid());
-
--- 7) TABELAS DE DADOS -----------------------------------------
+-- 2) TABELAS DE DADOS -----------------------------------------
 -- Padrão: LEIO o meu e o do parceiro que compartilha; ESCREVO só o meu.
 -- O `with check (profile_id = auth.uid())` é o que impede gravar linha
 -- em nome do parceiro mesmo estando na tela dele.
@@ -239,7 +104,7 @@ begin
   end loop;
 end $$;
 
--- 8) CATÁLOGO -------------------------------------------------
+-- 3) CATÁLOGO -------------------------------------------------
 -- Achado 2. Global (owner_id null) é legível por todos e editável por
 -- ninguém; quem quiser mapeamento próprio cria uma cópia sua.
 
@@ -269,7 +134,7 @@ create policy "vinculos: escrevo só nos meus exercicios" on public.exercise_mus
   with check (exists (select 1 from public.exercises e
                        where e.id = exercise_muscles.exercise_id and e.owner_id = auth.uid()));
 
--- 9) TAXONOMIA ------------------------------------------------
+-- 4) TAXONOMIA ------------------------------------------------
 -- Achado 4: era `for all`, e as FKs de exercise_muscles e
 -- volume_targets são ON DELETE CASCADE. Um delete aqui apagava
 -- vínculos e metas de todo mundo. Taxonomia muda por migração.
@@ -277,7 +142,7 @@ create policy "vinculos: escrevo só nos meus exercicios" on public.exercise_mus
 create policy "musculos: só leitura" on public.muscle_groups
   for select to authenticated using (true);
 
--- 10) STORAGE -------------------------------------------------
+-- 5) STORAGE -------------------------------------------------
 -- Achado 1. Resolve o dono por JOIN com progress_photos, não por
 -- prefixo do caminho — assim os objetos legados em `isa/…` continuam
 -- válidos sem mover arquivo nenhum.
@@ -310,14 +175,9 @@ create policy "fotos: apago as minhas" on storage.objects
     )
   );
 
--- 11) VIEWS POR PERFIL ----------------------------------------
--- security_invoker = on: a view respeita a RLS de quem consulta, então
--- não precisa de filtro próprio.
---
--- DROP antes de recriar, não "create or replace": a coluna `person` vira
--- `profile_id`, e o Postgres recusa renomear coluna de view com replace
--- ("cannot change name of view column"). Nada se perde — view não
--- guarda dado.
+-- 6) VIEWS SEM O `person` --------------------------------------
+-- A 008a criou as views com as duas colunas para app antigo e novo
+-- conviverem. O antigo já saiu do ar, então `person` sai daqui.
 
 drop view if exists public.v_weekly_volume_performed;
 drop view if exists public.v_weekly_volume_planned;
@@ -368,7 +228,7 @@ grant select on public.v_weekly_volume_performed to authenticated;
 grant select on public.v_weekly_volume_planned   to authenticated;
 grant select on public.v_unmapped_exercises      to authenticated;
 
--- 12) NOT NULL ------------------------------------------------
+-- 7) NOT NULL --------------------------------------------------
 -- Última coisa: a partir daqui é impossível criar linha órfã.
 
 do $$
@@ -382,7 +242,7 @@ begin
   end loop;
 end $$;
 
--- 13) CONFERÊNCIA VISÍVEL -------------------------------------
+-- 8) CONFERÊNCIA VISÍVEL -------------------------------------
 -- O SQL Editor do Supabase não mostra RAISE NOTICE, então a migração
 -- termina devolvendo o estado em tabela.
 --
